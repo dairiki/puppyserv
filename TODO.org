@@ -1,0 +1,5 @@
+* TODO Throttling
+  Set an overmal limit on outgoing frames/sec (or kb/sec?)
+  and share it equally between clients.
+
+

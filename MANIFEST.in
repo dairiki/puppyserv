@@ -1,0 +1,4 @@
+include development.ini
+
+recursive-include test *.jpg
+
