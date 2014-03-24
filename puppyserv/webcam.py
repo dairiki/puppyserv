@@ -72,7 +72,6 @@ class WebcamVideoStream(object):
     def __init__(self, url, headers=HEADERS, timeout=20):
         self.req = Request(url, headers=headers)
         self.timeout = timeout
-        self.content_type = None
 
     def __iter__(self):
         fp = urlopen(self.req, timeout=self.timeout)
@@ -98,11 +97,9 @@ class WebcamVideoStream(object):
             #    raise StreamingError(u"random puke")
             headers = Message(fp, seekable=0)
             log.debug("Got part\n%s", headers)
-            if not self.content_type:
-                self.content_type = headers['content-type']
             content_length = int(headers['content-length'])
             data = fp.read(content_length)
-            yield VideoFrame(data, self)
+            yield VideoFrame(data, headers['content-type'])
 
 class WebcamStillStream(object):
     def __init__(self, url, headers=HEADERS, timeout=10):
@@ -114,7 +111,6 @@ class WebcamStillStream(object):
         h.update(headers)
         self.req = Request(url, headers=h)
         self.timeout = timeout
-        self.content_type = None
 
     def __iter__(self):
         while True:
@@ -127,8 +123,5 @@ class WebcamStillStream(object):
                     .format(body=fp.read(), **locals()))
             headers = fp.info()
             log.debug("Got image\n%s", headers)
-            if not self.content_type:
-                self.content_type = headers['content-type']
-            content_length = int(headers['content-length'])
             data = fp.read()
-            yield VideoFrame(data, self)
+            yield VideoFrame(data, headers['content-type'])
