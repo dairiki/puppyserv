@@ -1,4 +1,6 @@
 include development.ini
 
-recursive-include test *.jpg
+recursive-include puppyserv *.jpg
+prune test/orig
+recursive-include test/images *.jpg
 

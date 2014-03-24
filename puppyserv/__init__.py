@@ -26,12 +26,27 @@ _dist = get_distribution(__name__)
 SERVER_NAME = "%s/%s (<dairiki@dairiki.org>)" % (
     _dist.project_name, _dist.version)
 
+def add_server_headers_filter(global_config, **settings):
+    """ Middleware to add headers normally added by real http server.
+
+    Used when uwsgi is serving HTTP request directly.
+
+    """
+    @wsgify.middleware
+    def filter(request, app):
+        response = request.get_response(app)
+        response.server = SERVER_NAME
+        response.date=datetime.utcnow()
+        return response
+    return filter
+
 def main(global_config, **settings):
     stream = None
 
     logging.config.fileConfig(global_config['__file__'], global_config)
 
     max_total_framerate = float(settings.get('max_total_framerate', 100.0))
+    frame_timeout = float(settings.get('frame_timeout', 10.0))
 
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
@@ -46,8 +61,11 @@ def main(global_config, **settings):
     return VideoStreamApp(stream_factory, max_total_framerate)
 
 class VideoStreamApp(object):
-    def __init__(self, stream, max_total_framerate, server_name=SERVER_NAME):
-        self.stream = VideoBuffer(stream)
+    def __init__(self, stream,
+                 frame_timeout=10,
+                 max_total_framerate=10,
+                 server_name=SERVER_NAME):
+        self.stream = VideoBuffer(stream, timeout=frame_timeout)
         self.max_total_framerate = max_total_framerate
         self.server_name = server_name
         assert max_total_framerate > 0
@@ -72,8 +90,6 @@ class VideoStreamApp(object):
             content_type='multipart/x-mixed-replace',
             content_type_params={'boundary': self.boundary},
             cache_control='no-cache',
-            server=self.server_name,
-            date=datetime.utcnow(),
             app_iter = self.app_iter(request))
 
     @wsgify
@@ -83,8 +99,6 @@ class VideoStreamApp(object):
             raise HTTPGatewayTimeout('Not connected to webcam')
         return Response(
             cache_control='no-cache',
-            server=self.server_name,
-            date=datetime.utcnow(),
             content_type=frame.content_type,
             body=frame.image_data)
 
@@ -142,7 +156,7 @@ class StreamingClientStats(object):
             t_total, self.n_frames, cum_rate, rate)
 
 class VideoBuffer(object):
-    def __init__(self, stream_factory, timeout=2):
+    def __init__(self, stream_factory, timeout=10):
         self.n_clients = 0
         self.stream_factory = stream_factory
         self._stream = None

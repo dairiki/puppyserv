@@ -44,13 +44,13 @@ class VideoFrame(object):
 class StaticVideoStream(object):
     """ A video stream from static images.  For testing.
     """
-    def __init__(self, image_filenames, loop=True):
+    def __init__(self, image_filenames, loop=True, frame_rate=4.0):
         if not image_filenames:
             raise ValueError("No images given")
         self.frames = map(VideoFrame.from_file, image_filenames)
         self.loop = loop
         self.start = time.time()
-        self.frame_rate = 0.2
+        self.frame_rate = frame_rate
         self.closed = False
 
     def close(self):

@@ -21,8 +21,6 @@ requires = [
 tests_require = []
 
 if sys.version_info[:2] < (2,7):
-    #requires.append('argparse')
-    #requires.append('Counter')          # replacement for collections.Counter
     tests_require.append('unittest2')
 
 class PyTest(TestCommand):
@@ -66,6 +64,9 @@ setup(name='puppyserv',
       entry_points={
           'paste.app_factory': [
               'main = puppyserv:main',
+              ],
+          'paste.filter_factory': [
+              'add_server_headers = puppyserv:add_server_headers_filter',
               ],
           'console_scripts': [
               #'btp_filestore_gc = btp.scripts.filestore_gc:main',
