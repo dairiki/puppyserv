@@ -7,23 +7,20 @@ from collections import deque
 from datetime import datetime
 import gevent.event
 import glob
-import itertools
 import logging
 import logging.config
-import mimetypes
 import threading
-import time
 
-from paste.urlmap import URLMap
-from pkg_resources import resource_filename
 from webob import Response
 from webob.dec import wsgify
 from webob.exc import HTTPNotFound
-from webob.static import DirectoryApp
-from webhelpers.html import HTML
 
 from puppyserv.stream import StaticVideoStream
-from puppyserv.webcam import WebcamVideoStream
+from puppyserv.webcam import (
+    WebcamFailsafeStream,
+    WebcamStillStream,
+    WebcamVideoStream,
+    )
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +32,15 @@ def main(global_config, **settings):
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
         stream = StaticVideoStream(image_files)
-    elif 'webcam.streaming_url' in settings:
-        stream = WebcamVideoStream(settings['webcam.streaming_url'])
+    else:
+        streaming_url = settings.get('webcam.streaming_url').strip()
+        still_url = settings.get('webcam.still_url').strip()
+        if streaming_url and still_url:
+            stream = WebcamFailsafeStream(streaming_url, still_url)
+        elif streaming_url:
+            stream = WebcamVideoStream(streaming_url)
+        elif still_url:
+            stream = WebcamStillStream(still_url)
 
     stream = VideoBuffer(stream)
 
