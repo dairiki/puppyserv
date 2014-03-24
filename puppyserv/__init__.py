@@ -41,16 +41,20 @@ def main(global_config, **settings):
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
         def stream_factory():
-            return VideoStreamer(StaticVideoStream(image_files))
+            #return VideoStreamer(StaticVideoStream(image_files))
+            return StaticVideoStream(image_files)
     else:
-        streaming_url = settings.get('webcam.streaming_url').strip()
-        still_url = settings.get('webcam.still_url').strip()
+        streaming_url = settings.get('webcam.streaming_url', '').strip()
+        still_url = settings.get('webcam.still_url', '').strip()
         if streaming_url and still_url:
-            stream = WebcamFailsafeStream(streaming_url, still_url)
+            def stream_factory():
+                return WebcamFailsafeStream(streaming_url, still_url)
         elif streaming_url:
-            stream = WebcamVideoStream(streaming_url)
+            def stream_factory():
+                return VideoStreamer(WebcamVideoStream(streaming_url))
         elif still_url:
-            stream = WebcamStillStream(still_url)
+            def stream_factory():
+                return VideoStreamer(WebcamStillStream(still_url))
 
     return VideoStreamApp(stream_factory, max_total_framerate)
 
@@ -150,7 +154,7 @@ class StreamingClientStats(object):
             t_total, self.n_frames, cum_rate, rate)
 
 class VideoBuffer(object):
-    def __init__(self, stream_factory, timeout=1):
+    def __init__(self, stream_factory, timeout=2):
         self.n_clients = 0
         self.stream_factory = stream_factory
         self._stream = None
@@ -173,7 +177,7 @@ class VideoBuffer(object):
         assert self.n_clients > 0
         self.n_clients -= 1
         if self.n_clients == 0:
-            self._stream.stop()
+            self._stream.close()
             self._stream = None
         log.debug("VideoBuffer: nclients = %d", self.n_clients)
 
@@ -185,7 +189,7 @@ class VideoBuffer(object):
                 try:
                     frame = stream.get_frame(frame, timeout=timeout)
                 except StreamTimeout:
-                    timeout = None
+                    #timeout = None
                     yield self.timeout_frame
                 else:
                     if frame is None:

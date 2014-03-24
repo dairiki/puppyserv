@@ -51,10 +51,10 @@ class StaticVideoStream(object):
         self.loop = loop
         self.start = time.time()
         self.frame_rate = 0.2
-        self.running = True
+        self.closed = False
 
-    def stop(self):
-        self.running = False
+    def close(self):
+        self.closed = True
 
     def __iter__(self):
         frame = self.get_frame()
@@ -77,7 +77,7 @@ class StaticVideoStream(object):
 
     def _get_frame(self, index):
         index = int(index)
-        if not self.running:
+        if self.closed:
             return None
         if self.loop:
             index = index % len(self.frames)
@@ -114,24 +114,24 @@ class VideoStreamer(Thread):
         self.signal_new_frame = async.send
 
         self.daemon = True
-        self.running = True
+        self.closed = False
         self.start()
 
-    def stop(self):
-        self.running = False
-        self.stream.stop()
+    def close(self):
+        self.closed = True
+        self.stream.close()
 
     def run(self):
-        log.info("Capture thread starting: %r", self)
+        log.info("Capture thread starting: %r", self.stream)
         frame = None
-        while self.running:
+        while not self.closed:
             try:
                 frame = self.stream.get_frame(frame, timeout=1.0)
             except StreamTimeout:
                 pass
             else:
                 self._buffer_frame(frame)
-        log.info("Capture thread terminating: %r", self)
+        log.info("Capture thread terminating: %r", self.stream)
 
     @synchronized
     def _buffer_frame(self, frame):
