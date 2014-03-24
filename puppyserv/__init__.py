@@ -73,7 +73,9 @@ class VideoStreamApp(object):
 
     @wsgify
     def __call__(self, request):
-        if request.path_info != '/':
+        if request.path_info == '/snapshot':
+            return self.snapshot(request)
+        elif request.path_info != '/':
             raise HTTPNotFound()
 
         return Response(
@@ -84,6 +86,16 @@ class VideoStreamApp(object):
             date=datetime.utcnow(),
             #accept_ranges='bytes',
             app_iter = self.app_iter(request))
+
+    @wsgify
+    def snapshot(self, request):
+        for frame in self.stream:
+            return Response(
+                content_type=frame.content_type,
+                cache_control='no-cache',
+                server="puppyserv/0.1.dev0", # FIXME
+                date=datetime.utcnow(),
+                body=frame.image_data)
 
     def app_iter(self, request):
         stream = self.stream
@@ -135,7 +147,6 @@ class ClientStats(object):
             self.client_addr,
             t_total, self.n_frames, cum_rate, rate)
 
-
 class VideoBuffer(object):
     def __init__(self, stream, length=4):
         super(VideoBuffer, self).__init__()
@@ -146,29 +157,33 @@ class VideoBuffer(object):
         self.mutex = threading.Lock()
         self.new_frame = gevent.event.Event()
         self.thread = None
+        self.set_new_frame = None
         self.stop = False
         self.n_clients = 0
 
     def _start(self):
         # Defer setting up the async watcher until after uwsgi
         # has started, otherwise it sets up it's own hub
-        self.stop = False
         if not self.thread:
+            if not self.set_new_frame:
+                async = gevent.get_hub().loop.async()
+                async.start(self._set_new_frame)
+                self.set_new_frame = async.send
+
+            self.stop = False
             self.buf.clear()
-            async = gevent.get_hub().loop.async()
-            @async.start
-            def _set_new_frame():
-                with self.mutex:
-                    new_frame = self.new_frame
-                    self.new_frame = gevent.event.Event()
-                    new_frame.set()
-            self.set_new_frame = async.send
             thread = threading.Thread(
                 target=self.run,
                 kwargs=dict(set_new_frame=async.send))
             thread.daemon = True
             thread.start()
             self.thread = thread
+
+    def _set_new_frame(self):
+        with self.mutex:
+            new_frame = self.new_frame
+            self.new_frame = gevent.event.Event()
+            new_frame.set()
 
     def run(self, set_new_frame):
         buf = self.buf

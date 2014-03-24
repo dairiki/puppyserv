@@ -5,6 +5,10 @@ from __future__ import absolute_import
 
 import mimetypes
 from itertools import cycle
+try:
+    from gevent import sleep
+except ImportError:
+    from time import sleep
 
 class VideoFrame(object):
     def __init__(self, image_data, stream):
@@ -31,4 +35,4 @@ class StaticVideoStream(object):
         for fn in filenames:
             with open(fn, 'rb') as fp:
                 yield VideoFrame(fp.read(), self)
-            time.sleep(.25)
+            sleep(.25)
