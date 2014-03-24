@@ -5,6 +5,7 @@ from __future__ import absolute_import
 
 from collections import deque
 from datetime import datetime
+from functools import partial, wraps
 import gevent.event
 import glob
 import logging
@@ -149,99 +150,129 @@ class ClientStats(object):
 
 class VideoBuffer(object):
     def __init__(self, stream, length=4):
-        super(VideoBuffer, self).__init__()
+        self.n_clients = 0
+        self._stream_factory = partial(VideoStreamer, stream, length)
+        self._stream = None
+
+    # These would need a mutex if they were to be called from more
+    # than one thread, but since we're geventing, we don't need it.
+    def __enter__(self):
+        if not self._stream:
+            assert self.n_clients == 0
+            self._stream = self._stream_factory()
+            # FIXME: move to VideoStreamer.__init__?
+            self._stream.start()
+        self.n_clients += 1
+        log.debug("VideoBuffer: nclients = %d", self.n_clients)
+        return self._stream
+
+    def __exit__(self, exc_type, exc_value, exc_tb):
+        assert self.n_clients > 0
+        self.n_clients -= 1
+        if self.n_clients == 0:
+            self._stream.stop()
+            self._stream = None
+        log.debug("VideoBuffer: nclients = %d", self.n_clients)
+
+    def __iter__(self):
+        with self as stream:
+            for frame in stream:
+                yield frame
+
+    def get_frame(self, current_frame=None):
+        with self as stream:
+            return stream.get_frame(current_frame)
+
+def synchronized(method):
+    @wraps(method)
+    def wrapper(self, *args):
+        with self.mutex:
+            return method(self, *args)
+    return wrapper
+
+class VideoStreamer(threading.Thread):
+    """ Stream video is a separate thread.
+    """
+    def __init__(self, stream, length=4):
+        super(VideoStreamer, self).__init__()
+        self.daemon = True
 
         self.stream = stream
-        self.content_type = stream.content_type
         self.buf = deque(maxlen=length)
         self.mutex = threading.Lock()
+        self.shutdown = False
+
         self.new_frame = gevent.event.Event()
-        self.thread = None
-        self.set_new_frame = None
-        self.stop = False
-        self.n_clients = 0
 
-    def _start(self):
-        # Defer setting up the async watcher until after uwsgi
-        # has started, otherwise it sets up it's own hub
-        if not self.thread:
-            if not self.set_new_frame:
-                async = gevent.get_hub().loop.async()
-                async.start(self._set_new_frame)
-                self.set_new_frame = async.send
+        # gevent magic:
+        # Hook to to set the new_frame event in the main thread
+        async = gevent.get_hub().loop.async()
+        async.start(self._set_new_frame)
+        self.set_new_frame = async.send
 
-            self.stop = False
-            self.buf.clear()
-            thread = threading.Thread(
-                target=self.run,
-                kwargs=dict(set_new_frame=async.send))
-            thread.daemon = True
-            thread.start()
-            self.thread = thread
+    def stop(self):
+        self.shutdown = True
 
-    def _set_new_frame(self):
-        with self.mutex:
-            new_frame = self.new_frame
-            self.new_frame = gevent.event.Event()
-            new_frame.set()
-
-    def run(self, set_new_frame):
+    def run(self):
+        # FIXME: how to get to stop even if no frames are coming in
         buf = self.buf
         mutex = self.mutex
+
+        log.info("Capture thread starting: %r", self)
         for frame in self.stream:
             with mutex:
                 buf.appendleft(frame)
-                set_new_frame()            # kick main thread
-                if self.stop:
-                    break
-        with mutex:
-            self.thread = None
-            set_new_frame()            # kick main thread
+                self.set_new_frame()            # kick main thread
+            if self.shutdown:
+                break
+        log.info("Capture thread stopping: %r", self)
+
+    @synchronized
+    def _set_new_frame(self):
+        new_frame = self.new_frame
+        self.new_frame = gevent.event.Event()
+        new_frame.set()
 
     def __iter__(self):
-        with self.mutex:
-            self._start()
-            self.n_clients += 1
-        try:
-            log.debug("VideoBuffer: nclients = %d", self.n_clients)
-            # Start with the most recent frame
-            while len(self.buf) == 0:
-                self.new_frame.wait()
-            frame = self.buf[0]
+        frame = self.get_frame()
+        while frame:
+            yield frame
+            frame = self.get_frame(frame)
 
-            while frame:
-                yield frame
-                # Wait for next frame
-                next_frame = self._next_frame(frame)
-                while next_frame is None:
-                    with self.mutex:
-                        if self.thread is None:
-                            break
-                    self.new_frame.wait()
-                    next_frame = self._next_frame(frame)
-                frame = next_frame
-        finally:
-            with self.mutex:
-                self.n_clients -= 1
-                if self.n_clients == 0:
-                    self.stop = True
-                log.debug("VideoBuffer: nclients = %d", self.n_clients)
+    def get_frame(self, current_frame=None):
 
-    def _next_frame(self, current_frame):
+        frame = self._get_frame(current_frame)
+        while frame is None:
+            if not self.is_alive():
+                return None             # end of stream
+            self.new_frame.wait()
+            frame = self._get_frame(current_frame)
+        return frame
+
+    @synchronized
+    def _get_frame(self, current_frame=None):
         buf = self.buf
-        with self.mutex:
-            next_frame = buf[0]
-            if next_frame == current_frame:
-                return None
-            for n in range(1, len(buf)):
-                frame = buf[n]
-                if frame is current_frame:
-                    if n > 1:
-                        log.debug("Skipped %d frames", n - 1)
-                    return next_frame
-                next_frame = frame
-            else:
-                # Current frame is no longer in buffer.
-                # Skip ahead to oldest buffered frame.
-                log.debug("Skipping frames")
-                return buf[-1]
+
+        if len(buf) == 0:
+            return None
+
+        if current_frame is None:
+            # Start with the most recent frame
+            return buf[0]
+
+        frames = iter(buf)
+        next_frame = next(frames)
+        if next_frame == current_frame:
+            return None
+
+        for nskip, frame in enumerate(frames):
+            if frame is current_frame:
+                if nskip:
+                    log.debug("Skipped %d frames", nskip)
+                return next_frame
+            next_frame = frame
+        else:
+            # Current frame is no longer in buffer.
+            # Skip ahead to oldest buffered frame.
+            log.debug("Skipping frames")
+            return buf[-1]
