@@ -22,6 +22,8 @@ from webob.exc import HTTPNotFound
 from webob.static import DirectoryApp
 from webhelpers.html import HTML
 
+from puppyserv.stream import StaticVideoStream
+from puppyserv.webcam import WebcamVideoStream
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +34,9 @@ def main(global_config, **settings):
 
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
-        stream = StaticVideoStream(image_files, loop=False)
+        stream = StaticVideoStream(image_files)
+    elif 'webcam.streaming_url' in settings:
+        stream = WebcamVideoStream(settings['webcam.streaming_url'])
 
     stream = VideoBuffer(stream)
 
@@ -67,9 +71,10 @@ class VideoStreamApp(object):
         EOL = b'\r\n'
         for frame in stream:
             data = frame.image_data
+            print frame, type(data)
             yield b''.join([
                 b'--', self.boundary, EOL,
-                b'Content-Type: ', stream.content_type, EOL,
+                b'Content-Type: ', frame.content_type, EOL,
                 b'Content-length: ', str(len(data)), EOL,
                 EOL,
                 data, EOL,
@@ -77,12 +82,6 @@ class VideoStreamApp(object):
         yield b''.join([
             b'--', self.boundary, b'--', EOL,
             ])
-
-class VideoFrame(object):
-    def __init__(self, image_data, stream):
-        self.image_data = image_data
-        self.stream = stream
-
 
 class VideoBuffer(object):
     def __init__(self, stream, length=4):
@@ -137,7 +136,6 @@ class VideoBuffer(object):
         frame = self.buf[0]
 
         while frame:
-            print "BUF", self.buf, frame
             yield frame
             # Wait for next frame
             next_frame = self._next_frame(frame)
@@ -167,24 +165,3 @@ class VideoBuffer(object):
                 # Skip ahead to oldest buffered frame.
                 log.debug("Skipping frames")
                 return buf[-1]
-
-class StaticVideoStream(object):
-    def __init__(self, image_filenames, loop=True):
-        if not image_filenames:
-            raise ValueError("No images given")
-        content_type, encoding = mimetypes.guess_type(image_filenames[0])
-        if not content_type:
-            raise ValueError("Can not guess content type")
-
-        self.image_filenames = image_filenames
-        self.loop = loop
-        self.content_type = content_type
-
-    def __iter__(self):
-        filenames = self.image_filenames
-        if self.loop:
-            filenames = itertools.cycle(filenames)
-        for fn in filenames:
-            with open(fn, 'rb') as fp:
-                yield VideoFrame(fp.read(), self)
-            time.sleep(.25)
