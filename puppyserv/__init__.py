@@ -8,7 +8,7 @@ from datetime import datetime
 import glob
 import logging
 import logging.config
-from pkg_resources import resource_filename
+from pkg_resources import get_distribution, resource_filename
 import time
 
 import gevent
@@ -17,19 +17,14 @@ from webob import Response
 from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPNotFound
 
-from puppyserv.stream import (
-    StaticVideoStream,
-    StreamTimeout,
-    VideoFrame,
-    VideoStreamer,
-    )
-from puppyserv.webcam import (
-    WebcamFailsafeStream,
-    WebcamStillStream,
-    WebcamVideoStream,
-    )
+from puppyserv.stream import StaticVideoStream, StreamTimeout, VideoFrame
+from puppyserv.webcam import webcam_stream_from_settings
 
 log = logging.getLogger(__name__)
+
+_dist = get_distribution(__name__)
+SERVER_NAME = "%s/%s (<dairiki@dairiki.org>)" % (
+    _dist.project_name, _dist.version)
 
 def main(global_config, **settings):
     stream = None
@@ -44,24 +39,17 @@ def main(global_config, **settings):
             #return VideoStreamer(StaticVideoStream(image_files))
             return StaticVideoStream(image_files)
     else:
-        streaming_url = settings.get('webcam.streaming_url', '').strip()
-        still_url = settings.get('webcam.still_url', '').strip()
-        if streaming_url and still_url:
-            def stream_factory():
-                return WebcamFailsafeStream(streaming_url, still_url)
-        elif streaming_url:
-            def stream_factory():
-                return VideoStreamer(WebcamVideoStream(streaming_url))
-        elif still_url:
-            def stream_factory():
-                return VideoStreamer(WebcamStillStream(still_url))
+        def stream_factory():
+            return webcam_stream_from_settings(settings,
+                                               user_agent=SERVER_NAME)
 
     return VideoStreamApp(stream_factory, max_total_framerate)
 
 class VideoStreamApp(object):
-    def __init__(self, stream, max_total_framerate):
+    def __init__(self, stream, max_total_framerate, server_name=SERVER_NAME):
         self.stream = VideoBuffer(stream)
         self.max_total_framerate = max_total_framerate
+        self.server_name = server_name
         assert max_total_framerate > 0
         self.boundary = b'ipcamera'
         self.clients = set()
@@ -84,7 +72,7 @@ class VideoStreamApp(object):
             content_type='multipart/x-mixed-replace',
             content_type_params={'boundary': self.boundary},
             cache_control='no-cache',
-            server="puppyserv/0.1.dev0", # FIXME
+            server=self.server_name,
             date=datetime.utcnow(),
             app_iter = self.app_iter(request))
 
@@ -95,7 +83,7 @@ class VideoStreamApp(object):
             raise HTTPGatewayTimeout('Not connected to webcam')
         return Response(
             cache_control='no-cache',
-            server="puppyserv/0.1.dev0", # FIXME
+            server=self.server_name,
             date=datetime.utcnow(),
             content_type=frame.content_type,
             body=frame.image_data)

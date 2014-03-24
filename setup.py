@@ -13,14 +13,12 @@ README = open(os.path.join(here, 'README.rst')).read()
 CHANGES = open(os.path.join(here, 'CHANGES.rst')).read()
 
 requires = [
-    'paste',
     'webob',
-    'webhelpers',
+    'gevent',
+    'paste',
     ]
 
-tests_require = requires + [
-    #'WebTest',
-    ]
+tests_require = []
 
 if sys.version_info[:2] < (2,7):
     #requires.append('argparse')
@@ -74,6 +72,9 @@ setup(name='puppyserv',
               ],
           },
 
-      tests_require=tests_require,
+      extras_require={
+          'test': tests_require,
+          },
+      tests_require=requires + tests_require,
       cmdclass={'test': PyTest},
       )

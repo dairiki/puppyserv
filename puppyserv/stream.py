@@ -151,10 +151,10 @@ class VideoStreamer(Thread):
             frame = self.get_frame(frame)
 
     def get_frame(self, current_frame=None, timeout=None):
+        if self.closed:
+            return None
         frame = self._get_frame(current_frame)
         while isinstance(frame, gevent.event.Event):
-            if not self.is_alive():
-                return None             # end of stream
             if not frame.wait(timeout):
                 raise StreamTimeout()
             frame = self._get_frame(current_frame)
@@ -176,10 +176,10 @@ class VideoStreamer(Thread):
         if next_frame == current_frame:
             return self.new_frame_event
 
-        for nskip, frame in enumerate(frames):
+        for n, frame in enumerate(frames):
             if frame is current_frame:
-                if nskip:
-                    log.debug("Skipped %d frames", nskip)
+                if n:
+                    log.debug("Behind %d frames", n)
                 return next_frame
             next_frame = frame
         # Current frame is no longer in buffer.
