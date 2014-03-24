@@ -15,7 +15,7 @@
   <script language="JavaScript" type="text/javascript">
    function reload() {
      document.getElementById("puppycam").src = "/stream/snapshot";
-     setTimeout('reload()',1000);
+     setTimeout('reload()',10000);
    };
   </script>
 </head>
@@ -34,8 +34,9 @@
     <a href="#" onclick="reload(); return false">Try clicking here</a>.
   </p>
   <!--<![endif]-->
-  <p><img id=puppycam src="/stream/" height=480 width=640></p>
-  <!-- onload="this.onerror = null" onerror="this.onerror = null; reload()" -->
+  <p><img id=puppycam src="/stream/" height=480 width=640
+          onload="this.onerror = null"
+          onerror="this.onerror = null; reload()"></p>
   <p>Violet's litter born March 11, 2014</p>
 </body>
 </html>

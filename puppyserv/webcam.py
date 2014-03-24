@@ -29,44 +29,53 @@ class StreamingError(Error):
 
 class WebcamFailsafeStream(object):
     def __init__(self, streaming_url, still_url, headers=HEADERS):
-        self.open_stream = partial(WebcamVideoStream, streaming_url, headers)
-        self.stream_iter = None
-        self.still_iter = iter(WebcamStillStream(still_url, headers))
-        self.holdoff = 1
-        self.wait = 0
+        self.stream = WebcamVideoStream(streaming_url, headers)
+        self.stills = WebcamStillStream(still_url, headers)
         self.content_type = None
 
     def __iter__(self):
+        holdoff = 1
+        wait = 0
+        stream_iter = None
+        still_iter = None
         while True:
-            if not self.stream_iter and self.wait < time.time():
+            if not stream_iter and wait < time.time():
                 try:
-                    self.stream_iter = iter(self.open_stream())
+                    stream_iter = iter(self.stream)
                 except Exception as ex:
                     log.warning("Can not open webcam stream: %s", ex)
-                    self.wait = time.time() + self.holdoff
-                    self.holdoff = min(64, self.holdoff * 2)
+                    wait = time.time() + holdoff
+                    holdoff = min(64, holdoff * 2)
                 else:
-                    self.holdoff = 1
-            if self.stream_iter:
+                    holdoff = 1
+            if stream_iter:
                 try:
-                    yield next(self.stream_iter)
+                    yield next(stream_iter)
                 except Exception as ex:
                     log.warning("Streaming failed: %s", ex)
-                    self.holdoff = 1
-                    self.wait = time.time() + self.holdoff
-                    self.stream_iter = None
+                    holdoff = 1
+                    wait = time.time() + holdoff
+                    stream_iter = None
                 else:
                     continue
             try:
-                yield next(self.still_iter)
+                if not still_iter:
+                    still_iter = iter(self.stills)
+                yield next(still_iter)
             except Exception as ex:
                 log.warning("Still capture failed: %s", ex)
                 # FIXME:
                 time.sleep(10)
+                still_iter = None
 
 class WebcamVideoStream(object):
-    def __init__(self, url, headers=HEADERS):
-        fp = urlopen(Request(url, headers=headers))
+    def __init__(self, url, headers=HEADERS, timeout=20):
+        self.req = Request(url, headers=headers)
+        self.timeout = timeout
+        self.content_type = None
+
+    def __iter__(self):
+        fp = urlopen(self.req, timeout=self.timeout)
         status = fp.getcode()
         info = fp.info()
         if status != 200 or info.getmaintype() != 'multipart':
@@ -77,18 +86,12 @@ class WebcamVideoStream(object):
         log.debug("Opened stream\n%s", info)
         boundary = info.getparam('boundary')
         assert boundary is not None
-        self.boundary = '--' + boundary
-        self.fp = fp
-        self.headers = info
-        self.content_type = None
 
-    def __iter__(self):
-        fp = self.fp
         while True:
             sep = fp.readline(80)
             if sep.strip() == '':
                 sep = fp.readline(80)
-            if not sep.startswith(self.boundary):
+            if not sep.startswith('--' + boundary):
                 raise StreamingError(u"Bad boundary %r" % sep)
             # Testing
             #if random.randrange(10) < 1:
@@ -102,7 +105,7 @@ class WebcamVideoStream(object):
             yield VideoFrame(data, self)
 
 class WebcamStillStream(object):
-    def __init__(self, url, headers=HEADERS):
+    def __init__(self, url, headers=HEADERS, timeout=10):
         h = {
             'Connection': 'keep-alive',
             'Cache-Control': 'no-cache',
@@ -110,11 +113,12 @@ class WebcamStillStream(object):
             }
         h.update(headers)
         self.req = Request(url, headers=h)
+        self.timeout = timeout
         self.content_type = None
 
     def __iter__(self):
         while True:
-            fp = urlopen(self.req)
+            fp = urlopen(self.req, timeout=self.timeout)
             status = fp.getcode()
             info = fp.info()
             if status != 200 or info.getmaintype() != 'image':
