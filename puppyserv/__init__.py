@@ -3,28 +3,26 @@
 """
 from __future__ import absolute_import
 
-from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
-from functools import partial, wraps
-import gevent.event
-from gevent.monkey import get_original
 import glob
 import logging
 import logging.config
-from operator import attrgetter
 from pkg_resources import resource_filename
 import time
 
-threading_Thread, threading_Lock = get_original('threading',
-                                                ['Thread', 'Lock'])
+import gevent
 
-import uwsgi
 from webob import Response
 from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPNotFound
 
-from puppyserv.stream import StaticVideoStream, VideoFrame
+from puppyserv.stream import (
+    StaticVideoStream,
+    StreamTimeout,
+    VideoFrame,
+    VideoStreamer,
+    )
 from puppyserv.webcam import (
     WebcamFailsafeStream,
     WebcamStillStream,
@@ -42,7 +40,8 @@ def main(global_config, **settings):
 
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
-        stream = StaticVideoStream(image_files)
+        def stream_factory():
+            return VideoStreamer(StaticVideoStream(image_files))
     else:
         streaming_url = settings.get('webcam.streaming_url').strip()
         still_url = settings.get('webcam.still_url').strip()
@@ -53,7 +52,7 @@ def main(global_config, **settings):
         elif still_url:
             stream = WebcamStillStream(still_url)
 
-    return VideoStreamApp(stream, max_total_framerate)
+    return VideoStreamApp(stream_factory, max_total_framerate)
 
 class VideoStreamApp(object):
     def __init__(self, stream, max_total_framerate):
@@ -151,9 +150,9 @@ class StreamingClientStats(object):
             t_total, self.n_frames, cum_rate, rate)
 
 class VideoBuffer(object):
-    def __init__(self, stream, length=4, timeout=1):
+    def __init__(self, stream_factory, timeout=1):
         self.n_clients = 0
-        self._stream_factory = partial(VideoStreamer, stream, length)
+        self.stream_factory = stream_factory
         self._stream = None
 
         self.timeout = timeout
@@ -165,9 +164,7 @@ class VideoBuffer(object):
     def __enter__(self):
         if not self._stream:
             assert self.n_clients == 0
-            self._stream = self._stream_factory()
-            # FIXME: move to VideoStreamer.__init__?
-            self._stream.start()
+            self._stream = self.stream_factory()
         self.n_clients += 1
         log.debug("VideoBuffer: nclients = %d", self.n_clients)
         return self._stream
@@ -199,99 +196,3 @@ class VideoBuffer(object):
     def get_frame(self, current_frame=None, timeout=None):
         with self as stream:
             return stream.get_frame(current_frame, timeout)
-
-def synchronized(method):
-    @wraps(method)
-    def wrapper(self, *args):
-        with self.mutex:
-            return method(self, *args)
-    return wrapper
-
-class StreamTimeout(Exception):
-    pass
-
-class VideoStreamer(threading_Thread):
-    """ Stream video is a separate thread.
-    """
-    def __init__(self, stream, length=4):
-        super(VideoStreamer, self).__init__()
-        self.daemon = True
-
-        self.stream = stream
-        self.buf = deque(maxlen=length)
-        self.mutex = threading_Lock()
-        self.shutdown = False
-
-        self.new_frame_event = gevent.event.Event()
-
-        # gevent magic:
-        # Hook to to set the new_frame event in the main thread
-        async = gevent.get_hub().loop.async()
-        async.start(self._signal_new_frame)
-        self.signal_new_frame = async.send
-
-    def stop(self):
-        self.shutdown = True
-
-    def run(self):
-        # FIXME: how to get to stop even if no frames are coming in
-        buf = self.buf
-        mutex = self.mutex
-
-        log.info("Capture thread starting: %r", self)
-        for frame in self.stream:
-            with mutex:
-                buf.appendleft(frame)
-                self.signal_new_frame()            # kick main thread
-            if self.shutdown:
-                break
-        log.info("Capture thread stopping: %r", self)
-
-    @synchronized
-    def _signal_new_frame(self):
-        new_frame_event = self.new_frame_event
-        self.new_frame_event = gevent.event.Event()
-        new_frame_event.set()
-
-    def __iter__(self):
-        frame = self.get_frame()
-        while frame:
-            yield frame
-            frame = self.get_frame(frame)
-
-    def get_frame(self, current_frame=None, timeout=None):
-        frame = self._get_frame(current_frame)
-        while isinstance(frame, gevent.event.Event):
-            if not self.is_alive():
-                return None             # end of stream
-            if not frame.wait(timeout):
-                raise StreamTimeout()
-            frame = self._get_frame(current_frame)
-        return frame
-
-    @synchronized
-    def _get_frame(self, current_frame=None):
-        buf = self.buf
-
-        if len(buf) == 0:
-            return self.new_frame_event
-
-        if current_frame is None:
-            # Start with the most recent frame
-            return buf[0]
-
-        frames = iter(buf)
-        next_frame = next(frames)
-        if next_frame == current_frame:
-            return self.new_frame_event
-
-        for nskip, frame in enumerate(frames):
-            if frame is current_frame:
-                if nskip:
-                    log.debug("Skipped %d frames", nskip)
-                return next_frame
-            next_frame = frame
-        # Current frame is no longer in buffer.
-        # Skip ahead to oldest buffered frame.
-        log.debug("Skipping frames")
-        return buf[-1]

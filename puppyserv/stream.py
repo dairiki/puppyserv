@@ -3,12 +3,30 @@
 """
 from __future__ import absolute_import
 
+from collections import deque
+from functools import wraps
+import logging
 import mimetypes
-from itertools import cycle
+import time
+
 try:
-    from gevent import sleep
+    import gevent
+    import gevent.event
 except ImportError:
+    gevent = None
+
+if gevent:
+    from gevent.monkey import get_original
+    Thread, Lock = get_original('threading', ['Thread', 'Lock'])
+    sleep = gevent.sleep
+else:
+    from threading import Thread, Lock
     from time import sleep
+
+log = logging.getLogger(__name__)
+
+class StreamTimeout(Exception):
+    pass
 
 class VideoFrame(object):
     def __init__(self, image_data, content_type):
@@ -24,16 +42,147 @@ class VideoFrame(object):
             return cls(fp.read(), content_type)
 
 class StaticVideoStream(object):
+    """ A video stream from static images.  For testing.
+    """
     def __init__(self, image_filenames, loop=True):
         if not image_filenames:
             raise ValueError("No images given")
         self.frames = map(VideoFrame.from_file, image_filenames)
         self.loop = loop
+        self.start = time.time()
+        self.frame_rate = 0.2
+        self.running = True
+
+    def stop(self):
+        self.running = False
 
     def __iter__(self):
-        frames = self.frames
-        if self.loop:
-            frames = cycle(frames)
-        for frame in frames:
+        frame = self.get_frame()
+        while frame:
             yield frame
-            sleep(2.25)
+            frame = self.get_frame(frame)
+
+    def get_frame(self, current_frame=None, timeout=None):
+        index = self.frame_rate * (time.time() - self.start)
+        frame = self._get_frame(index)
+        if current_frame is None or frame is not current_frame:
+            return frame
+
+        wait = (int(index) + 1 - index) / self.frame_rate
+        if timeout and timeout < wait:
+            sleep(timeout)
+            raise StreamTimeout()
+        sleep(wait)
+        return self._get_frame(index + 1)
+
+    def _get_frame(self, index):
+        index = int(index)
+        if not self.running:
+            return None
+        if self.loop:
+            index = index % len(self.frames)
+        elif index >= len(self.frames):
+            return None                 # stream done
+        return self.frames[index]
+
+def synchronized(method):
+    @wraps(method)
+    def wrapper(self, *args):
+        with self.mutex:
+            return method(self, *args)
+    return wrapper
+
+class VideoStreamer(Thread):
+    """ Stream video in a separate thread.
+
+    This has good support of the timeout argument to get_frame.
+
+    """
+    def __init__(self, stream, buffer_size=4):
+        super(VideoStreamer, self).__init__()
+
+        self.stream = stream
+        self.framebuf = deque(maxlen=buffer_size)
+        self.mutex = Lock()
+
+        self.new_frame_event = gevent.event.Event()
+
+        # gevent magic:
+        # Hook to to set the new_frame event in the main thread
+        async = gevent.get_hub().loop.async()
+        async.start(self._signal_new_frame)
+        self.signal_new_frame = async.send
+
+        self.daemon = True
+        self.running = True
+        self.start()
+
+    def stop(self):
+        self.running = False
+        self.stream.stop()
+
+    def run(self):
+        log.info("Capture thread starting: %r", self)
+        frame = None
+        while self.running:
+            try:
+                frame = self.stream.get_frame(frame, timeout=1.0)
+            except StreamTimeout:
+                pass
+            else:
+                self._buffer_frame(frame)
+        log.info("Capture thread terminating: %r", self)
+
+    @synchronized
+    def _buffer_frame(self, frame):
+        self.framebuf.appendleft(frame)
+        self.signal_new_frame()
+
+    @synchronized
+    def _signal_new_frame(self):
+        new_frame_event = self.new_frame_event
+        self.new_frame_event = gevent.event.Event()
+        new_frame_event.set()
+
+    def __iter__(self):
+        frame = self.get_frame()
+        while frame:
+            yield frame
+            frame = self.get_frame(frame)
+
+    def get_frame(self, current_frame=None, timeout=None):
+        frame = self._get_frame(current_frame)
+        while isinstance(frame, gevent.event.Event):
+            if not self.is_alive():
+                return None             # end of stream
+            if not frame.wait(timeout):
+                raise StreamTimeout()
+            frame = self._get_frame(current_frame)
+        return frame
+
+    @synchronized
+    def _get_frame(self, current_frame=None):
+        framebuf = self.framebuf
+
+        if len(framebuf) == 0:
+            return self.new_frame_event
+
+        if current_frame is None:
+            # Start with the most recent frame
+            return framebuf[0]
+
+        frames = iter(framebuf)
+        next_frame = next(frames)
+        if next_frame == current_frame:
+            return self.new_frame_event
+
+        for nskip, frame in enumerate(frames):
+            if frame is current_frame:
+                if nskip:
+                    log.debug("Skipped %d frames", nskip)
+                return next_frame
+            next_frame = frame
+        # Current frame is no longer in buffer.
+        # Skip ahead to oldest buffered frame.
+        log.debug("Skipping frames")
+        return framebuf[-1]

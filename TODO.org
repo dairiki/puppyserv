@@ -1,5 +1,8 @@
-* TODO Throttling
+* DONE Throttling
+  CLOSED: [2014-03-24 Mon 10:47]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-24 Mon 10:47]
+  :END:
   Set an overmal limit on outgoing frames/sec (or kb/sec?)
   and share it equally between clients.
-
-
+* TODO Google analytics
