@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Keadeen Puppy Cam</title>
+  <meta name="generator" content="BBEdit 9.6" />
+  <style type="text/css"><!--
+   p
+   {
+     font-family: Verdana, Arial, Helvetica, sans-serif;
+     font-size: 12px;
+     text-align: center;
+   }
+   --></style>
+  <script language="JavaScript" type="text/javascript">
+   function reload() {
+     document.getElementById("puppycam").src = "/stream/snapshot";
+     setTimeout('reload()',1000);
+   };
+  </script>
+</head>
+<body>
+  <p><img src="/static/banner3.gif" width="300" height="130"></p>
+  <p>Glen of Imaal Terrier Puppy Cam</p>
+  <!--[if IE]>
+  <p><b>Internet Explorer users</b>:
+  try <a href="https://www.google.com/chrome/">Chrome</a>
+  or <a href="http://www.getfirefox.com/">Firefox</a> for better
+  frame rates
+  </p>
+  <![endif]-->
+  <!--[if !IE]>-->
+  <p>Phone/tablet users: not seeing anything below?
+    <a href="#" onclick="reload(); return false">Try clicking here</a>.
+  </p>
+  <!--<![endif]-->
+  <p><img id=puppycam src="/stream/" height=480 width=640></p>
+  <!-- onload="this.onerror = null" onerror="this.onerror = null; reload()" -->
+  <p>Violet's litter born March 11, 2014</p>
+</body>
+</html>
