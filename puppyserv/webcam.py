@@ -113,8 +113,6 @@ class WebcamVideoStream(object):
                  connect_timeout=10, max_rate=3.0):
         headers = {
             'Accept': '*/*',
-            # FIXME: necessary?
-            'Referer': 'http://example.com/',
             'User-Agent': user_agent,
             }
         self.req = Request(url, headers=headers)
@@ -192,8 +190,6 @@ class WebcamStillStream(object):
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
             'Accept': '*/*',
-            # FIXME: necessary?
-            'Referer': 'http://example.com/',
             'User-Agent': user_agent,
             }
         self.req = Request(url, headers=headers)
