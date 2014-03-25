@@ -119,7 +119,6 @@ class VideoStreamer(Thread):
 
     def close(self):
         self.closed = True
-        self.stream.close()
 
     def run(self):
         log.info("Capture thread starting: %r", self.stream)
@@ -135,6 +134,7 @@ class VideoStreamer(Thread):
                 else:
                     self._buffer_frame(frame)
         log.info("Capture thread terminating: %r", self.stream)
+        self.stream.close()
 
     @synchronized
     def _buffer_frame(self, frame):
