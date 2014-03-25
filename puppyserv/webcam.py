@@ -120,16 +120,15 @@ class WebcamVideoStream(object):
         self.connect_timeout = connect_timeout
         self.closed = False
         self.frame = None
-        self.fp = None
+        self.stream = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
         self.open_rate_limiter = RateLimiter(1.0 / connect_timeout)
 
     def close(self):
         self.closed = True
-        if self.fp:
-            self.fp.close()
-            self.fp = None
+        if self.stream:
+            self.stream.close()
 
     def __iter__(self):
         frame = self.get_frame()
@@ -139,9 +138,6 @@ class WebcamVideoStream(object):
 
     def get_frame(self, current_frame=None, timeout=None):
         if self.closed:
-            if self.fp:
-                self.fp.close()
-                self.fp = None
             return None
 
         self.rate_limiter()
@@ -154,45 +150,57 @@ class WebcamVideoStream(object):
         #    time.sleep(10)
 
         try:
-            if self.fp is None:
-                self.fp = self._open_stream()
-            return self._get_frame(self.fp)
+            if self.stream is None:
+                self.open_rate_limiter()
+                self.stream = _Stream(self.req, self.connect_timeout)
+            return self.stream.get_frame()
         except Exception as ex:
-            if self.fp:
-                self.fp.close()
-                self.fp = None
+            self.stream = None
             self.frame = None
             log.warn("Streaming failed: %s", ex)
             raise StreamTimeout()
 
-    def _open_stream(self):
-        self.open_rate_limiter()
-        fp = urlopen(self.req, timeout=self.connect_timeout)
-        status = fp.getcode()
-        info = fp.info()
-        if status != 200 or info.getmaintype() != 'multipart':
-            raise ConnectionError(
-                u"Unexpected response: {status}\n{info}\n{body}"
-                .format(body=fp.read(), **locals()))
-        log.debug("Opened stream\n%s", info)
-        self._boundary = info.getparam('boundary')
-        assert self._boundary is not None
-        return fp
+class _Stream(object):
+    def __init__(self, req, timeout):
+        fp = urlopen(req, timeout=timeout)
+        try:
+            status = fp.getcode()
+            info = fp.info()
+            if status != 200 or info.getmaintype() != 'multipart':
+                raise ConnectionError(
+                    u"Unexpected response: {status}\n{info}\n{body}"
+                    .format(body=fp.read(), **locals()))
+            log.debug("Opened stream\n%s", info)
+            self.boundary = info.getparam('boundary')
+            assert self.boundary is not None
+        except:
+            fp.close()
+            raise
+        else:
+            self.fp = fp
 
-    def _get_frame(self, fp):
-        sep = fp.readline(80)
-        if sep.strip() == '':
+    def close(self):
+        self.fp.close()
+
+    def get_frame(self):
+        fp = self.fp
+        try:
             sep = fp.readline(80)
-        if not sep.startswith('--' + self._boundary):
-            raise StreamingError(u"Bad boundary %r" % sep)
-        # Testing
-        #if random.randrange(10) < 1:
-        #    raise StreamingError(u"random puke")
-        headers = Message(fp, seekable=0)
-        log.debug("Got part\n%s", headers)
-        content_length = int(headers['content-length'])
-        data = fp.read(content_length)
-        return VideoFrame(data, headers['content-type'])
+            if sep.strip() == '':
+                sep = fp.readline(80)
+            if not sep.startswith('--' + self.boundary):
+                raise StreamingError(u"Bad boundary %r" % sep)
+            # Testing
+            #if random.randrange(10) < 1:
+            #    raise StreamingError(u"random puke")
+            headers = Message(fp, seekable=0)
+            log.debug("Got part\n%s", headers)
+            content_length = int(headers['content-length'])
+            data = fp.read(content_length)
+            return VideoFrame(data, headers['content-type'])
+        except:
+            fp.close()
+            raise
 
 class WebcamStillStream(object):
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
