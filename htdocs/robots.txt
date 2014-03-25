@@ -1,0 +1,4 @@
+# No-lookee please...
+#
+User-Agent: *
+Disallow: /
