@@ -10,11 +10,22 @@
   :LOGBOOK:
   - State "DONE"       from "TODO"       [2014-03-24 Mon 23:13]
   :END:
-* DONE Throttling
-  CLOSED: [2014-03-24 Mon 10:47]
+* STARTED Throttling
   :LOGBOOK:
+  - State "STARTED"    from "DONE"       [2014-03-25 Tue 07:22]
   - State "DONE"       from "TODO"       [2014-03-24 Mon 10:47]
   :END:
   Set an overmal limit on outgoing frames/sec (or kb/sec?)
   and share it equally between clients.
-* TODO Google analytics
+
+  FIXME: this could be better.  Currently we limit the framerate
+  to each client to max_rate / n_clients.   If there are slow clients
+  it might be better to let the fast clients have the extra frames.
+  But need to do this in a fair way, somehow so that certain clients
+  can't hog all the frames.
+
+* DONE Google analytics
+  CLOSED: [2014-03-25 Tue 07:22]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-25 Tue 07:22]
+  :END:

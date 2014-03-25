@@ -6,7 +6,6 @@ from __future__ import absolute_import
 import logging
 from mimetools import Message
 import random
-import time
 from urllib2 import urlopen, Request
 
 
@@ -154,7 +153,7 @@ class WebcamVideoStream(object):
             return frame
 
         #if random.randrange(10) < 1:
-        #    time.sleep(10)
+        #    sleep(10)
 
         try:
             if self.stream is None:

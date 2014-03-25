@@ -117,11 +117,15 @@ class VideoStreamer(Thread):
         self.closed = False
         self.start()
 
+    def __repr__(self):
+        rep = super(VideoStreamer, self).__repr__()
+        return rep[:-1] + ': %s>' % repr(self.stream)
+
     def close(self):
         self.closed = True
 
     def run(self):
-        log.info("Capture thread starting: %r", self.stream)
+        log.debug("Capture thread starting: %r", self.stream)
         frame = None
         while not self.closed:
             try:
@@ -133,7 +137,7 @@ class VideoStreamer(Thread):
                     self.closed = True
                 else:
                     self._buffer_frame(frame)
-        log.info("Capture thread terminating: %r", self.stream)
+        log.debug("Capture thread terminating: %r", self.stream)
         self.stream.close()
 
     @synchronized
