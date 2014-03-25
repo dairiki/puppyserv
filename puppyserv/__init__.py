@@ -94,12 +94,11 @@ class VideoStreamApp(object):
         raise HTTPNotFound()
 
     def stream(self, request):
-        with self._client_stats(request) as client:
-            return Response(
-                content_type='multipart/x-mixed-replace',
-                content_type_params={'boundary': self.boundary},
-                cache_control='no-cache',
-                app_iter = self._app_iter(client))
+        return Response(
+            content_type='multipart/x-mixed-replace',
+            content_type_params={'boundary': self.boundary},
+            cache_control='no-cache',
+            app_iter = self._app_iter(request))
 
     def snapshot(self, request):
         frame = self.video_buffer.get_frame()
@@ -119,24 +118,25 @@ class VideoStreamApp(object):
         finally:
             self.clients.remove(client)
 
-    def _app_iter(self, client):
-        for frame in self.video_buffer:
-            t0 = time.time()
-            client.got_frame()
-            data = frame.image_data
-            yield b''.join([
-                b'--', self.boundary, EOL,
-                b'Content-Type: ', frame.content_type, EOL,
-                b'Content-length: ', str(len(data)), EOL,
-                EOL,
-                data, EOL,
-                ])
-            throttle = len(self.clients) / self.max_total_framerate
-            gevent.sleep(max(0, t0 + throttle - time.time()))
+    def _app_iter(self, request):
+        with self._client_stats(request) as client:
+            for frame in self.video_buffer:
+                t0 = time.time()
+                client.got_frame()
+                data = frame.image_data
+                yield b''.join([
+                    b'--', self.boundary, EOL,
+                    b'Content-Type: ', frame.content_type, EOL,
+                    b'Content-length: ', str(len(data)), EOL,
+                    EOL,
+                    data, EOL,
+                    ])
+                throttle = len(self.clients) / self.max_total_framerate
+                gevent.sleep(max(0, t0 + throttle - time.time()))
 
-        yield b''.join([
-            b'--', self.boundary, b'--', EOL,
-            ])
+            yield b''.join([
+                b'--', self.boundary, b'--', EOL,
+                ])
 
 class StreamingClientStats(object):
     def __init__(self, request):
