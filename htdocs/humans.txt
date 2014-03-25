@@ -1,0 +1,15 @@
+/* TEAM */
+    Webcam:
+        Jerry Kindall & Amy Tighe
+        http://www.keadeenglens.com/
+
+    Puppies:
+        Violet
+
+    Rebroadcaster:
+        Jeff Dairiki <dairiki@dairiki.org>
+
+/* TECH */
+
+    The rebroadcaster is built with python, webob, gevent, uwsgi,
+    paste and buildout.
