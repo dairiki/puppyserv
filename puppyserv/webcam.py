@@ -120,14 +120,16 @@ class WebcamVideoStream(object):
         self.connect_timeout = connect_timeout
         self.closed = False
         self.frame = None
-        self.stream = None
+        self.fp = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
         self.open_rate_limiter = RateLimiter(1.0 / connect_timeout)
 
     def close(self):
         self.closed = True
-        self.stream = None
+        if self.fp:
+            self.fp.close()
+            self.fp = None
 
     def __iter__(self):
         frame = self.get_frame()
@@ -137,7 +139,9 @@ class WebcamVideoStream(object):
 
     def get_frame(self, current_frame=None, timeout=None):
         if self.closed:
-            self.stream = None
+            if self.fp:
+                self.fp.close()
+                self.fp = None
             return None
 
         self.rate_limiter()
@@ -150,11 +154,13 @@ class WebcamVideoStream(object):
         #    time.sleep(10)
 
         try:
-            if self.stream is None:
-                self.stream = self._open_stream()
-            return next(self.stream)
+            if self.fp is None:
+                self.fp = self._open_stream()
+            return self._get_frame(self.fp)
         except Exception as ex:
-            self.stream = None
+            if self.fp:
+                self.fp.close()
+                self.fp = None
             self.frame = None
             log.warn("Streaming failed: %s", ex)
             raise StreamTimeout()
@@ -169,23 +175,24 @@ class WebcamVideoStream(object):
                 u"Unexpected response: {status}\n{info}\n{body}"
                 .format(body=fp.read(), **locals()))
         log.debug("Opened stream\n%s", info)
-        boundary = info.getparam('boundary')
-        assert boundary is not None
+        self._boundary = info.getparam('boundary')
+        assert self._boundary is not None
+        return fp
 
-        while True:
+    def _get_frame(self, fp):
+        sep = fp.readline(80)
+        if sep.strip() == '':
             sep = fp.readline(80)
-            if sep.strip() == '':
-                sep = fp.readline(80)
-            if not sep.startswith('--' + boundary):
-                raise StreamingError(u"Bad boundary %r" % sep)
-            # Testing
-            #if random.randrange(10) < 1:
-            #    raise StreamingError(u"random puke")
-            headers = Message(fp, seekable=0)
-            log.debug("Got part\n%s", headers)
-            content_length = int(headers['content-length'])
-            data = fp.read(content_length)
-            yield VideoFrame(data, headers['content-type'])
+        if not sep.startswith('--' + self._boundary):
+            raise StreamingError(u"Bad boundary %r" % sep)
+        # Testing
+        #if random.randrange(10) < 1:
+        #    raise StreamingError(u"random puke")
+        headers = Message(fp, seekable=0)
+        log.debug("Got part\n%s", headers)
+        content_length = int(headers['content-length'])
+        data = fp.read(content_length)
+        return VideoFrame(data, headers['content-type'])
 
 class WebcamStillStream(object):
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
