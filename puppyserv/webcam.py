@@ -244,6 +244,7 @@ class WebcamStillStream(object):
         if frame and frame is not current_frame:
             return frame
 
+        fp = None
         try:
             fp = urlopen(self.req, timeout=self.connect_timeout)
             status = fp.getcode()
@@ -261,3 +262,6 @@ class WebcamStillStream(object):
             self.frame = None
             log.warn("Still capture failed: %s", ex)
             raise StreamTimeout(unicode(ex))
+        finally:
+            if fp:
+                fp.close()
