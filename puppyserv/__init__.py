@@ -45,8 +45,11 @@ def main(global_config, **settings):
 
     logging.config.fileConfig(global_config['__file__'], global_config)
 
-    max_total_framerate = float(settings.get('max_total_framerate', 100.0))
-    frame_timeout = float(settings.get('frame_timeout', 10.0))
+    config = {
+        'max_total_framerate': float(
+            settings.get('max_total_framerate', 100.0)),
+        'frame_timeout': float(settings.get('frame_timeout', 10.0)),
+        }
 
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
@@ -58,7 +61,7 @@ def main(global_config, **settings):
             return webcam_stream_from_settings(settings,
                                                user_agent=SERVER_NAME)
 
-    return VideoStreamApp(stream_factory, max_total_framerate)
+    return VideoStreamApp(stream_factory, **config)
 
 class VideoStreamApp(object):
     def __init__(self, stream,
