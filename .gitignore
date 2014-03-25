@@ -1,6 +1,8 @@
 *~
 *.pyc
 /puppyserv.egg-info/
+/production.ini
+/log/
 
 /2014-*/
 /*.mkv
@@ -16,6 +18,6 @@
 /develop-eggs/
 /eggs/
 /parts/
+
 /htmlcov/
 /.coverage
-/production.ini
