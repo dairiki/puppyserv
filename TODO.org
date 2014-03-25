@@ -1,3 +1,15 @@
+* DONE Clean up streaming connection shutdown
+  CLOSED: [2014-03-24 Mon 23:12]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-24 Mon 23:12]
+  :END:
+  - 2014-03-24 21:54:40,780 WARNI [puppyserv.webcam][Thread-2]
+    Streaming failed: 'NoneType' object has no attribute 'recv'
+* DONE Fix still capture stuff and "no connection" image?
+  CLOSED: [2014-03-24 Mon 23:13]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-24 Mon 23:13]
+  :END:
 * DONE Throttling
   CLOSED: [2014-03-24 Mon 10:47]
   :LOGBOOK:

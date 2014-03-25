@@ -94,20 +94,27 @@ class WebcamFailsafeStream(object):
             stills = self.still_stream = \
                      VideoStreamer(WebcamStillStream(**self.still_config))
         else:
-            timeout2 = stream_timeout
+            timeout1 = 0
+            timeout2 = 0.01
 
         try:
             frame = stream.get_frame(streaming_frame, timeout=timeout2)
         except StreamTimeout:
-            timeout3 = 0.1 if timeout is not None else None
-            frame = stills.get_frame(current_frame, timeout=timeout3)
-            frame.streaming_frame = streaming_frame
-            log.info("Returning still")
-            return frame
+            pass
         else:
+            log.info("Closing still stream")
             stills.close()
             self.still_stream = None
             return frame
+
+        if timeout is None:
+            timeout3 = None
+        else:
+            timeout3 = max(timeout - timeout1 - timeout2, 0.01)
+        frame = stills.get_frame(current_frame, timeout=timeout3)
+        frame.streaming_frame = streaming_frame
+        log.info("Returning still")
+        return frame
 
 class WebcamVideoStream(object):
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
@@ -247,8 +254,7 @@ class WebcamStillStream(object):
                     u"Unexpected response: {status}\n{info}\n{body}"
                     .format(body=fp.read(), **locals()))
             headers = fp.info()
-            #log.debug("Got image\n%s", headers)
-            log.info("Got image\n%s", headers)
+            log.debug("Got image\n%s", headers)
             data = fp.read()
             self.frame = VideoFrame(data, headers['content-type'])
             return self.frame
@@ -256,17 +262,3 @@ class WebcamStillStream(object):
             self.frame = None
             log.warn("Still capture failed: %s", ex)
             raise StreamTimeout(unicode(ex))
-
-class RateLimiter(object):
-    def __init__(self, max_rate):
-        self.dt = 1.0/max_rate
-        self.wait_until = None
-
-    def __call__(self):
-        now = time.time()
-        wait_until = self.wait_until
-        if wait_until and wait_until > now:
-            sleep(wait_until - now)
-            self.wait_until += self.dt
-        else:
-            self.wait_until = now + self.dt
