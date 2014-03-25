@@ -102,6 +102,7 @@ class WebcamFailsafeStream(object):
             timeout3 = 0.1 if timeout is not None else None
             frame = stills.get_frame(current_frame, timeout=timeout3)
             frame.streaming_frame = streaming_frame
+            log.info("Returning still")
             return frame
         else:
             stills.close()
@@ -122,9 +123,11 @@ class WebcamVideoStream(object):
         self.stream = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
+        self.open_rate_limiter = RateLimiter(1.0 / connect_timeout)
 
     def close(self):
         self.closed = True
+        self.stream = None
 
     def __iter__(self):
         frame = self.get_frame()
@@ -134,6 +137,7 @@ class WebcamVideoStream(object):
 
     def get_frame(self, current_frame=None, timeout=None):
         if self.closed:
+            self.stream = None
             return None
 
         self.rate_limiter()
@@ -156,6 +160,7 @@ class WebcamVideoStream(object):
             raise StreamTimeout()
 
     def _open_stream(self):
+        self.open_rate_limiter()
         fp = urlopen(self.req, timeout=self.connect_timeout)
         status = fp.getcode()
         info = fp.info()
@@ -227,7 +232,8 @@ class WebcamStillStream(object):
                     u"Unexpected response: {status}\n{info}\n{body}"
                     .format(body=fp.read(), **locals()))
             headers = fp.info()
-            log.debug("Got image\n%s", headers)
+            #log.debug("Got image\n%s", headers)
+            log.info("Got image\n%s", headers)
             data = fp.read()
             self.frame = VideoFrame(data, headers['content-type'])
             return self.frame

@@ -130,7 +130,10 @@ class VideoStreamer(Thread):
             except StreamTimeout:
                 pass
             else:
-                self._buffer_frame(frame)
+                if frame is None:
+                    self.closed = True
+                else:
+                    self._buffer_frame(frame)
         log.info("Capture thread terminating: %r", self.stream)
 
     @synchronized
