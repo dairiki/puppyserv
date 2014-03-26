@@ -89,14 +89,6 @@ class VideoStreamApp(object):
         self.clients = set()
         gevent.spawn(self._logger)
 
-    def _logger(self):
-        while True:
-            gevent.sleep(10)
-            if self.clients:
-                log.info("Clients:%s", "".join(
-                    "\n  " + client.stats() for client in self.clients))
-            else:
-                log.info("No clients")
 
     @wsgify
     def __call__(self, request):
@@ -127,11 +119,31 @@ class VideoStreamApp(object):
     @contextmanager
     def _client_stats(self, request):
         client = StreamingClientStats(request)
+        log.info("Starting stream to %s", request.client_addr)
         self.clients.add(client)
         try:
             yield client
         finally:
+            fmt  = (u"connected {time_connected:.1f}s {total_frames} frames"
+                    u" [{average_rate:.02f}/s]")
+            log.info("Closing stream to %s: %s", request.client_addr,
+                     client.stats(format=fmt))
             self.clients.remove(client)
+
+    def _logger(self, interval=30):
+        # FIXME: Make report interval configurable
+        fmt = (
+            u"\n  {client_addr}:"
+            u" connected {time_connected:.1f}s {total_frames} frames"
+            u" [{average_rate:.02f}/s];"
+            u" current rate {current_rate:.02f}/s")
+        while True:
+            gevent.sleep(interval)
+            if self.clients:
+                log.info("Clients:%s", "".join(
+                    client.stats(format=fmt) for client in self.clients))
+            else:
+                log.info("No clients")
 
     def _app_iter(self, request):
         with self._client_stats(request) as client:
@@ -167,17 +179,28 @@ class StreamingClientStats(object):
         self.n_frames += 1
         self.d_frames += 1
 
-    def stats(self):
-        t = time.time()
-        t_total = t - self.t0
-        cum_rate = self.n_frames / max(0.01, t_total)
-        rate = self.d_frames / max(0.01, (t - self.t))
+    def summary(self):
+        t = time.time() - self.t0
+        rate = self.n_frames / max(0.01, t)
+        return '%.1fs %d frames [%.02f/s]' % (t, self.n_frames, rate)
 
-        self.d_frames = 0
-        self.t = t
-        return "%s: connect %.1fs %d frames [%.02f/s]; inst: %.02f/s" % (
-            self.client_addr,
-            t_total, self.n_frames, cum_rate, rate)
+    def stats(self, format=None, reset=True):
+        t = time.time()
+        time_connected = t - self.t0
+        data = {
+            'client_addr': self.client_addr,
+            'time_connected': time_connected,
+            'total_frames': self.n_frames,
+            'average_rate': self.n_frames / max(0.01, time_connected),
+            'current_rate': self.d_frames / max(0.01, (t - self.t)),
+            }
+        if reset:
+            self.d_frames = 0
+            self.t = t
+        if format:
+            return format.format(**data)
+        return data
+
 
 class VideoBuffer(object):
     def __init__(self, stream_factory,
