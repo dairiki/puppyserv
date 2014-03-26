@@ -193,3 +193,76 @@ class VideoStreamer(Thread):
         # Skip ahead to oldest buffered frame.
         log.debug("Skipping frames")
         return framebuf[-1]
+
+class FailsafeStream(object):
+    """ A stream which falls back to a backup stream if the primary
+    stream times out.
+
+    """
+    def __init__(self, primary_stream, backup_stream_factory):
+        self.primary_stream = primary_stream
+        self.backup_stream_factory = backup_stream_factory
+        self.backup_stream = None
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+        self.primary_stream.close()
+        if self.backup_stream:
+            self.backup_stream.close()
+            self.backup_stream = None
+
+    def __iter__(self):
+        frame = self.get_frame()
+        while frame:
+            yield frame
+            frame = self.get_frame(frame)
+
+    def get_frame(self, current_frame=None, timeout=None):
+        if self.closed:
+            return None
+
+        # FIXME: make this timeout configurable
+        check_timeout = 10
+
+        while timeout is None or timeout > check_timeout:
+            try:
+                return self._get_frame(current_frame, timeout=check_timeout)
+            except StreamTimeout:
+                if timeout is not None:
+                    timeout -= check_timeout
+
+        return self._get_frame(current_frame, timeout)
+
+    def _get_frame(self, current_frame, timeout):
+        assert not self.closed
+        assert timeout is not None
+
+        primary_frame = getattr(current_frame, 'primary_frame', current_frame)
+
+        primary = self.primary_stream
+        backup = self.backup_stream
+
+        if backup:
+            # We're current streaming from the backup stream
+            try:
+                # Check to see if primary stream is back up
+                frame = primary.get_frame(primary_frame, timeout=0)
+            except StreamTimeout:
+                # It's not...
+                frame = backup.get_frame(current_frame, timeout=timeout)
+                frame.primary_frame = primary_frame
+                return frame
+            else:
+                # Primary stream working again, close backup stream
+                log.info("Switching to primary stream")
+                backup.close()
+                self.backup_stream = None
+                return frame
+        else:
+            try:
+                return primary.get_frame(primary_frame, timeout=timeout)
+            except StreamTimeout:
+                log.info("Switching to backup stream")
+                self.backup_stream = self.backup_stream_factory()
+                raise

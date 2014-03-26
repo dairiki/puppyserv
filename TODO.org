@@ -40,3 +40,10 @@
   - State "DONE"       from "TODO"       [2014-03-26 Wed 07:46]
   :END:
   Handle HEAD correctly, returns error for other methods
+
+* DONE Fix the Failsafe stream still stream starting logic.
+  CLOSED: [2014-03-26 Wed 08:49]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-26 Wed 08:49]
+  :END:
+  Maybe don't start still stream until video stream misses one whole timeout

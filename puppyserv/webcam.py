@@ -9,7 +9,12 @@ import random
 from urllib2 import urlopen, Request
 
 
-from puppyserv.stream import StreamTimeout, VideoFrame, VideoStreamer
+from puppyserv.stream import (
+    FailsafeStream,
+    StreamTimeout,
+    VideoFrame,
+    VideoStreamer,
+    )
 from puppyserv.util import sleep, RateLimiter
 
 DEFAULT_USER_AGENT = 'puppyserv (<dairiki@dairiki.org>)'
@@ -32,14 +37,18 @@ def webcam_stream_from_settings(settings, prefix='webcam.', **defaults):
             stream_config.setdefault(key, defaults[key])
             still_config.setdefault(key, defaults[key])
 
+    def still_stream_factory():
+        return VideoStreamer(WebcamStillStream(**still_config))
+
     if 'url' in stream_config:
+        video_stream = VideoStreamer(WebcamVideoStream(**stream_config))
         if 'url' in still_config:
-            return WebcamFailsafeStream(stream_config, still_config)
+            return FailsafeStream(video_stream, still_stream_factory)
         else:
-            return VideoStreamer(WebcamVideoStream(**stream_config))
+            return video_stream
     else:
         assert 'url' in still_config
-        return VideoStreamer(WebcamStillStream(**still_config))
+        return still_stream_factory()
 
 def _get_config(settings, prefix='webcam.'):
     config = {}
@@ -49,71 +58,6 @@ def _get_config(settings, prefix='webcam.'):
         if prefix + key in settings:
             config[key] = coerce(settings[prefix + key])
     return config
-
-class WebcamFailsafeStream(object):
-    def __init__(self, stream_config, still_config):
-        self.stream = VideoStreamer(WebcamVideoStream(**stream_config))
-        self.still_config = still_config
-        self.still_stream = None
-        self.closed = False
-
-    def close(self):
-        self.closed = True
-        self.stream.close()
-        if self.still_stream:
-            self.still_stream.close()
-            self.still_stream = None
-
-    def __iter__(self):
-        frame = self.get_frame()
-        while frame:
-            yield frame
-            frame = self.get_frame(frame)
-
-    def get_frame(self, current_frame=None, timeout=None):
-        if self.closed:
-            return None
-
-        stream = self.stream
-        stills = self.still_stream
-
-        streaming_frame = getattr(current_frame, 'streaming_frame',
-                                  current_frame)
-
-        stream_timeout = timeout if timeout is not None else 10
-
-        if not stills:
-            min_timeout = 2 / stream.stream.max_rate
-            timeout1 = max(stream_timeout / 3, min_timeout)
-            timeout2 = max(stream_timeout - timeout1, 0.01)
-            try:
-                return stream.get_frame(streaming_frame, timeout=timeout1)
-            except StreamTimeout:
-                pass
-            stills = self.still_stream = \
-                     VideoStreamer(WebcamStillStream(**self.still_config))
-        else:
-            timeout1 = 0
-            timeout2 = 0.01
-
-        try:
-            frame = stream.get_frame(streaming_frame, timeout=timeout2)
-        except StreamTimeout:
-            pass
-        else:
-            log.info("Closing still stream")
-            stills.close()
-            self.still_stream = None
-            return frame
-
-        if timeout is None:
-            timeout3 = None
-        else:
-            timeout3 = max(timeout - timeout1 - timeout2, 0.01)
-        frame = stills.get_frame(current_frame, timeout=timeout3)
-        frame.streaming_frame = streaming_frame
-        log.info("Returning still")
-        return frame
 
 class WebcamVideoStream(object):
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
