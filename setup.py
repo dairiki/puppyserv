@@ -16,9 +16,12 @@ requires = [
     'webob',
     'gevent',
     'paste',
+    'six',
     ]
 
-tests_require = []
+tests_require = [
+    'mock',
+    ]
 
 if sys.version_info[:2] < (2,7):
     tests_require.append('unittest2')

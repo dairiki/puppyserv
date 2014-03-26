@@ -13,11 +13,13 @@ mutipart/x-mixed-replace MJPEG video.
 """
 from __future__ import absolute_import
 
-import httplib
+import errno
+from httplib import HTTPConnection, HTTPException
 import socket
 import threading
 import time
 import os
+
 from paste.httpserver import WSGIHandler, WSGIServer
 from webob import Response
 from webob.dec import wsgify
@@ -30,25 +32,34 @@ def get_free_port():
     ip = os.environ.get('WEBTEST_SERVER_BIND', '127.0.0.1')
     return ip, port
 
-def check_server(host, port, path_info='/', timeout=3, retries=30):
+def check_server(host, port, path_info='/', timeout=.1, retries=30):
     """Perform a request until the server reply"""
     if retries < 0:
         return 0
-    conn = httplib.HTTPConnection(host, port, timeout=timeout)
-    time.sleep(.3)
+    conn = HTTPConnection(host, port, timeout=timeout)
     for i in range(retries):
         try:
             conn.request('GET', path_info)
             res = conn.getresponse()
             return res.status
-        except (socket.error, httplib.HTTPException):
-            time.sleep(.3)
+        except (socket.error, HTTPException):
+            time.sleep(timeout)
     return 0
 
 
+class QuietWSGIHandler(WSGIHandler):
+    """ Ignore EPIPE in finish
+    """
+    def finish(self):
+        try:
+            WSGIHandler.finish(self)
+        except socket.error as ex:
+            if ex.errno != errno.EPIPE:
+                raise                   # pragma: NO COVER
+
 class StopableWSGIServer(WSGIServer): # (sic)
     def __init__(self, app, host='127.0.0.1', port=8080,
-                 handler=WSGIHandler,
+                 handler=QuietWSGIHandler,
                  ssl_context=None,
                  daemon_threads=False,
                  socket_timeout=None,
