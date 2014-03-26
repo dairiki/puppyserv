@@ -89,26 +89,21 @@ class WebcamVideoStream(object):
     def get_frame(self, current_frame=None, timeout=None):
         if self.closed:
             return None
-
         self.rate_limiter()
-
-        frame = self.frame
-        if frame and frame is not current_frame:
-            return frame
-
-        #if random.randrange(10) < 1:
-        #    sleep(10)
-
-        try:
-            if self.stream is None:
-                self.open_rate_limiter()
-                self.stream = _Stream(self.req, self.connect_timeout)
-            return self.stream.get_frame()
-        except Exception as ex:
-            self.stream = None
-            self.frame = None
-            log.warn("Streaming failed: %s", ex)
-            raise StreamTimeout(unicode(ex))
+        if self.frame in (None, current_frame):
+            #if random.randrange(10) < 1:
+            #    sleep(10)
+            try:
+                if self.stream is None:
+                    self.open_rate_limiter()
+                    self.stream = _Stream(self.req, self.connect_timeout)
+                self.frame = self.stream.get_frame()
+            except Exception as ex:
+                self.stream = None
+                self.frame = None
+                log.warn("Streaming failed: %s", ex)
+                raise StreamTimeout(unicode(ex))
+        return self.frame
 
 class _Stream(object):
     def __init__(self, req, timeout):
