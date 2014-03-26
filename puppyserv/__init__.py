@@ -111,7 +111,7 @@ class VideoStreamApp(object):
     @_GET_only
     def snapshot(self, request):
         with self.stream_manager as stream:
-            frame = next(stream)
+            frame = next(iter(stream))
             if frame is stream.timeout_frame:
                 return HTTPGatewayTimeout('Not connected to webcam')
         return Response(
