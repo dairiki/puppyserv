@@ -9,6 +9,8 @@ import logging
 import mimetypes
 import time
 
+from pkg_resources import resource_filename
+
 try:
     import gevent
     import gevent.event
@@ -266,3 +268,40 @@ class FailsafeStream(object):
                 log.info("Switching to backup stream")
                 self.backup_stream = self.backup_stream_factory()
                 raise
+
+class TimeoutStream(object):
+    """ A stream wrapper which substitutes a frame with a 'timed out' message
+    when the wrapped stream times out.
+
+    """
+    def __init__(self, stream, frame_timeout=10):
+        self.stream = stream
+        self.frame_timeout = frame_timeout
+
+        # FIXME: make timeout image configurable
+        timeout_image = resource_filename('puppyserv', 'timeout.jpg')
+        self.timeout_frame = VideoFrame.from_file(timeout_image)
+
+    def close(self):
+        self.stream.close()
+
+    def __iter__(self):
+        current_frame = None
+        n_timeouts = 0
+        while True:
+            timeout = self.frame_timeout if n_timeouts < 2 else None
+            try:
+                frame = self.stream.get_frame(current_frame, timeout=timeout)
+            except StreamTimeout:
+                n_timeouts += 1
+                yield self.timeout_frame
+            else:
+                n_timeouts = 0
+                current_frame = frame
+                if frame is None:
+                    break
+                yield frame
+
+    def get_frame(self, current_frame=None, timeout=None):
+        # XXX: not sure how this should behave
+        return self.stream.get_frame(current_frame, timeout)

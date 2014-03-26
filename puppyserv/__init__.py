@@ -3,13 +3,12 @@
 """
 from __future__ import absolute_import
 
-from contextlib import contextmanager
 from datetime import datetime
 from functools import wraps
 import glob
 import logging
 import logging.config
-from pkg_resources import get_distribution, resource_filename
+from pkg_resources import get_distribution
 import time
 
 import gevent
@@ -18,7 +17,8 @@ from webob import Response
 from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
-from puppyserv.stream import StaticVideoStream, StreamTimeout, VideoFrame
+from puppyserv.stats import StreamStatManager
+from puppyserv.stream import StaticVideoStream, TimeoutStream
 from puppyserv.webcam import webcam_stream_from_settings
 
 log = logging.getLogger(__name__)
@@ -65,6 +65,8 @@ def main(global_config, **settings):
                           ('frame_timeout', 5.0),
                           ('stop_stream_holdoff', 15.0)])
 
+    frame_timeout = config.pop('frame_timeout')
+
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
         def stream_factory():
@@ -72,8 +74,9 @@ def main(global_config, **settings):
             return StaticVideoStream(image_files)
     else:
         def stream_factory():
-            return webcam_stream_from_settings(settings,
-                                               user_agent=SERVER_NAME)
+            stream = webcam_stream_from_settings(settings,
+                                                 user_agent=SERVER_NAME)
+            return TimeoutStream(stream, frame_timeout)
 
     log.info("App starting!")
     return VideoStreamApp(stream_factory, **config)
@@ -82,12 +85,11 @@ class VideoStreamApp(object):
 
     boundary = b'puppyserv-92af5f768c28fad8'
 
-    def __init__(self, stream, max_total_framerate=10, **kwargs):
+    def __init__(self, stream_factory, max_total_framerate=10, **kwargs):
         assert max_total_framerate > 0
-        self.video_buffer = VideoBuffer(stream, **kwargs)
         self.max_total_framerate = max_total_framerate
-        self.clients = set()
-        gevent.spawn(self._logger)
+        self.stream_manager = StreamManager(stream_factory, **kwargs)
+        self.stats = StreamStatManager()
 
 
     @wsgify
@@ -108,133 +110,75 @@ class VideoStreamApp(object):
 
     @_GET_only
     def snapshot(self, request):
-        frame = self.video_buffer.get_frame()
-        if frame is None:
-            return HTTPGatewayTimeout('Not connected to webcam')
+        with self.stream_manager as stream:
+            frame = next(stream)
+            if frame is stream.timeout_frame:
+                return HTTPGatewayTimeout('Not connected to webcam')
         return Response(
             cache_control='no-cache',
             content_type=frame.content_type,
             body=frame.image_data)
 
-    @contextmanager
-    def _client_stats(self, request):
-        client = StreamingClientStats(request)
-        log.info("Starting stream to %s", request.client_addr)
-        self.clients.add(client)
-        try:
-            yield client
-        finally:
-            fmt  = (u"connected {time_connected:.1f}s {total_frames} frames"
-                    u" [{average_rate:.02f}/s]")
-            log.info("Closing stream to %s: %s", request.client_addr,
-                     client.stats(format=fmt))
-            self.clients.remove(client)
-
-    def _logger(self, interval=30):
-        # FIXME: Make report interval configurable
-        fmt = (
-            u"\n  {client_addr}:"
-            u" connected {time_connected:.1f}s {total_frames} frames"
-            u" [{average_rate:.02f}/s];"
-            u" current rate {current_rate:.02f}/s")
-        while True:
-            gevent.sleep(interval)
-            if self.clients:
-                log.info("Clients:%s", "".join(
-                    client.stats(format=fmt) for client in self.clients))
-            else:
-                log.info("No clients")
 
     def _app_iter(self, request):
-        with self._client_stats(request) as client:
-            t0 = time.time()
-            for frame in self.video_buffer:
-                client.got_frame()
-                data = frame.image_data
-                yield b''.join([
-                    b'--', self.boundary, EOL,
-                    b'Content-Type: ', frame.content_type, EOL,
-                    b'Content-length: ', str(len(data)), EOL,
-                    EOL,
-                    data, EOL,
-                    ])
-                wait_until = t0 + len(self.clients) / self.max_total_framerate
-                now = time.time()
-                if wait_until > now:
-                    gevent.sleep(wait_until - now)
-                t0 = max(wait_until, now)
+        stream_manager = self.stream_manager
+        max_total_framerate = self.max_total_framerate
+        with self.stats(request.client_addr) as stats:
+            with stream_manager as stream:
+                t0 = time.time()
+                for frame in stream:
+                    stats.got_frame()
+                    yield self._part_for_frame(frame)
 
-            yield b''.join([
-                b'--', self.boundary, b'--', EOL,
-                ])
+                    n_clients = stream_manager.n_clients
+                    wait_until = t0 + n_clients / max_total_framerate
+                    now = time.time()
+                    if wait_until > now:
+                        gevent.sleep(wait_until - now)
+                    t0 = max(wait_until, now)
 
-class StreamingClientStats(object):
-    def __init__(self, request):
-        self.client_addr = request.client_addr
-        self.n_frames = 0
-        self.d_frames = 0
-        self.t0 = self.t = time.time()
+            yield b'--' + self.boundary + b'--' + EOL
 
-    def got_frame(self):
-        self.n_frames += 1
-        self.d_frames += 1
+    def _part_for_frame(self, frame):
+        data = frame.image_data
+        return b''.join([
+            b'--', self.boundary, EOL,
+            b'Content-Type: ', frame.content_type, EOL,
+            b'Content-length: ', str(len(data)), EOL,
+            EOL,
+            data, EOL,
+            ])
 
-    def summary(self):
-        t = time.time() - self.t0
-        rate = self.n_frames / max(0.01, t)
-        return '%.1fs %d frames [%.02f/s]' % (t, self.n_frames, rate)
-
-    def stats(self, format=None, reset=True):
-        t = time.time()
-        time_connected = t - self.t0
-        data = {
-            'client_addr': self.client_addr,
-            'time_connected': time_connected,
-            'total_frames': self.n_frames,
-            'average_rate': self.n_frames / max(0.01, time_connected),
-            'current_rate': self.d_frames / max(0.01, (t - self.t)),
-            }
-        if reset:
-            self.d_frames = 0
-            self.t = t
-        if format:
-            return format.format(**data)
-        return data
-
-
-class VideoBuffer(object):
-    def __init__(self, stream_factory,
-                 frame_timeout=10,
-                 stop_stream_holdoff=15):
-        self.n_clients = 0
+class StreamManager(object):
+    def __init__(self, stream_factory, stop_stream_holdoff=15):
+        self.stop_stream_holdoff = stop_stream_holdoff
+        self._n_clients = 0
         self.stream_factory = stream_factory
         self._stream = None
         self._stopper = None
 
-        self.frame_timeout = frame_timeout
-        self.stop_stream_holdoff = stop_stream_holdoff
-
-        timeout_image = resource_filename('puppyserv', 'timeout.jpg')
-        self.timeout_frame = VideoFrame.from_file(timeout_image)
+    @property
+    def n_clients(self):
+        return self._n_clients
 
     # XXX: These would need a mutex if they were to be called from more
     # than one thread, but since we're geventing, we don't need it.
     def __enter__(self):
-        if self.n_clients == 0:
+        if self._n_clients == 0:
             self._start_stream()
-        self.n_clients += 1
-        log.debug("VideoBuffer: nclients = %d", self.n_clients)
+        self._n_clients += 1
+        log.debug("StreamManager: nclients = %d", self._n_clients)
         return self._stream
 
     def __exit__(self, exc_type, exc_value, exc_tb):
-        assert self.n_clients > 0
-        self.n_clients -= 1
-        if self.n_clients == 0:
+        assert self._n_clients > 0
+        self._n_clients -= 1
+        if self._n_clients == 0:
             self._stop_stream()
-        log.debug("VideoBuffer: nclients = %d", self.n_clients)
+        log.debug("StreamManager: nclients = %d", self._n_clients)
 
     def _start_stream(self):
-        assert self.n_clients == 0
+        assert self._n_clients == 0
         if not self._stream:
             self._stream = self.stream_factory()
             log.info("Started stream capture %r", self._stream)
@@ -244,7 +188,7 @@ class VideoBuffer(object):
             self._stopper = None
 
     def _stop_stream(self):
-        assert self.n_clients == 0
+        assert self._n_clients == 0
         assert self._stream
         assert not self._stopper
         def stop_stream():
@@ -253,24 +197,3 @@ class VideoBuffer(object):
             self._stream = None
         holdoff = self.stop_stream_holdoff
         self._stopper = gevent.spawn_later(holdoff, stop_stream)
-
-    def __iter__(self):
-        frame = None
-        n_timeouts = 0
-        with self as stream:
-            while True:
-                try:
-                    timeout = self.frame_timeout if n_timeouts < 2 else None
-                    frame = stream.get_frame(frame, timeout=timeout)
-                except StreamTimeout:
-                    yield self.timeout_frame
-                    n_timeouts += 1
-                else:
-                    if frame is None:
-                        break
-                    yield frame
-                    n_timeouts = 0
-
-    def get_frame(self, current_frame=None, timeout=None):
-        with self as stream:
-            return stream.get_frame(current_frame, timeout)
