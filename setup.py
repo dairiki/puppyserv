@@ -15,12 +15,12 @@ CHANGES = open(os.path.join(here, 'CHANGES.rst')).read()
 requires = [
     'webob',
     'gevent',
-    'paste',
     'six',
     ]
 
 tests_require = [
     'mock',
+    'paste',
     ]
 
 if sys.version_info[:2] < (2,7):
