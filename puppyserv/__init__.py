@@ -63,6 +63,7 @@ def main(global_config, **settings):
             return webcam_stream_from_settings(settings,
                                                user_agent=SERVER_NAME)
 
+    log.info("App starting!")
     return VideoStreamApp(stream_factory, **config)
 
 class VideoStreamApp(object):
