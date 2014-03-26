@@ -5,6 +5,7 @@ from __future__ import absolute_import
 
 from contextlib import contextmanager
 from datetime import datetime
+from functools import wraps
 import glob
 import logging
 import logging.config
@@ -15,7 +16,7 @@ import gevent
 
 from webob import Response
 from webob.dec import wsgify
-from webob.exc import HTTPGatewayTimeout, HTTPNotFound
+from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
 from puppyserv.stream import StaticVideoStream, StreamTimeout, VideoFrame
 from puppyserv.webcam import webcam_stream_from_settings
@@ -41,6 +42,17 @@ def add_server_headers_filter(global_config, **settings):
         response.date=datetime.utcnow()
         return response
     return filter
+
+def _GET_only(view_method, allow=('GET', 'HEAD')):
+    @wraps(view_method)
+    def wrapper(self, request):
+        if request.method not in allow:
+            return HTTPMethodNotAllowed(allow=allow)
+        response = view_method(self, request)
+        if request.method == 'HEAD':
+            response.body = b''
+        return response
+    return wrapper
 
 def main(global_config, **settings):
     stream = None
@@ -92,8 +104,9 @@ class VideoStreamApp(object):
             return self.stream(request)
         elif request.path_info == '/snapshot':
             return self.snapshot(request)
-        raise HTTPNotFound()
+        return HTTPNotFound()
 
+    @_GET_only
     def stream(self, request):
         return Response(
             content_type='multipart/x-mixed-replace',
@@ -101,10 +114,11 @@ class VideoStreamApp(object):
             cache_control='no-cache',
             app_iter = self._app_iter(request))
 
+    @_GET_only
     def snapshot(self, request):
         frame = self.video_buffer.get_frame()
         if frame is None:
-            raise HTTPGatewayTimeout('Not connected to webcam')
+            return HTTPGatewayTimeout('Not connected to webcam')
         return Response(
             cache_control='no-cache',
             content_type=frame.content_type,
