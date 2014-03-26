@@ -135,8 +135,8 @@ class VideoStreamApp(object):
 
     def _app_iter(self, request):
         with self._client_stats(request) as client:
+            t0 = time.time()
             for frame in self.video_buffer:
-                t0 = time.time()
                 client.got_frame()
                 data = frame.image_data
                 yield b''.join([
@@ -146,8 +146,11 @@ class VideoStreamApp(object):
                     EOL,
                     data, EOL,
                     ])
-                throttle = len(self.clients) / self.max_total_framerate
-                gevent.sleep(max(0, t0 + throttle - time.time()))
+                wait_until = t0 + len(self.clients) / self.max_total_framerate
+                now = time.time()
+                if wait_until > now:
+                    gevent.sleep(wait_until - now)
+                t0 = max(wait_until, now)
 
             yield b''.join([
                 b'--', self.boundary, b'--', EOL,
