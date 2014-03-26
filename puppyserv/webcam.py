@@ -164,7 +164,7 @@ class WebcamVideoStream(object):
             self.stream = None
             self.frame = None
             log.warn("Streaming failed: %s", ex)
-            raise StreamTimeout()
+            raise StreamTimeout(unicode(ex))
 
 class _Stream(object):
     def __init__(self, req, timeout):
@@ -244,9 +244,13 @@ class WebcamStillStream(object):
         if frame and frame is not current_frame:
             return frame
 
-        fp = None
         try:
             fp = urlopen(self.req, timeout=self.connect_timeout)
+        except Exception as ex:
+            self.frame = None
+            log.warn("Still connection failed: %s", ex)
+            raise StreamTimeout(unicode(ex))
+        try:
             status = fp.getcode()
             info = fp.info()
             if status != 200 or info.getmaintype() != 'image':
@@ -263,5 +267,4 @@ class WebcamStillStream(object):
             log.warn("Still capture failed: %s", ex)
             raise StreamTimeout(unicode(ex))
         finally:
-            if fp:
-                fp.close()
+            fp.close()
