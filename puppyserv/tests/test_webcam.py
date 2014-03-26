@@ -4,8 +4,6 @@
 from __future__ import absolute_import
 
 from itertools import count
-import logging
-import tempfile
 import time
 import unittest
 from urllib import urlencode
@@ -48,9 +46,7 @@ class WebcamStreamTests(object):
 
     def test_get_frame_returns_cached_frame(self):
         stream = self.make_one()
-        print "OPEN"
         frame = stream.get_frame(timeout=0.1)
-        print "GOT FRAME"
         frame2 = stream.get_frame(timeout=0.1)
         self.assertEqual(frame2.image_data, frame.image_data)
 
@@ -64,7 +60,6 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
             query['bad_boundary'] = '1'
         qs = urlencode(query)
         url = test_server.application_url + path + '?' + qs
-        print "URL", url
         stream = WebcamVideoStream(url, max_rate=max_rate,
                                    connect_timeout=connect_timeout, **kwargs)
         self.addCleanup(stream.close)

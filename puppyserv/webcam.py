@@ -6,8 +6,9 @@ from __future__ import absolute_import
 import logging
 from mimetools import Message
 import random
-from urllib2 import urlopen, Request
+import urlparse
 
+from six.moves.http_client import HTTPConnection
 
 from puppyserv.stream import (
     FailsafeStream,
@@ -15,7 +16,7 @@ from puppyserv.stream import (
     VideoFrame,
     VideoStreamer,
     )
-from puppyserv.util import sleep, RateLimiter
+from puppyserv.util import sleep, RateLimiter, ReadlineAdapter
 
 DEFAULT_USER_AGENT = 'puppyserv (<dairiki@dairiki.org>)'
 
@@ -62,23 +63,29 @@ def _get_config(settings, prefix='webcam.'):
 class WebcamVideoStream(object):
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
                  connect_timeout=10, max_rate=3.0):
-        headers = {
+        netloc, self.url = _parse_url(url)
+        self.conn = HTTPConnection(netloc, timeout=connect_timeout)
+        self.request_headers = {
             'Accept': '*/*',
             'User-Agent': user_agent,
             }
-        self.req = Request(url, headers=headers)
-        self.connect_timeout = connect_timeout
-        self.closed = False
-        self.frame = None
+
         self.stream = None
+        self.frame = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
         self.open_rate_limiter = RateLimiter(1.0 / connect_timeout)
 
     def close(self):
-        self.closed = True
         if self.stream:
-            self.stream.close()
+            self.stream = None
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    @property
+    def closed(self):
+        return not self.conn
 
     def __iter__(self):
         frame = self.get_frame()
@@ -96,8 +103,8 @@ class WebcamVideoStream(object):
             try:
                 if self.stream is None:
                     self.open_rate_limiter()
-                    self.stream = _Stream(self.req, self.connect_timeout)
-                self.frame = self.stream.get_frame()
+                    self.stream = self._open_stream()
+                self.frame = next(self.stream, None)
             except Exception as ex:
                 self.stream = None
                 self.frame = None
@@ -105,67 +112,70 @@ class WebcamVideoStream(object):
                 raise StreamTimeout(unicode(ex))
         return self.frame
 
-class _Stream(object):
-    def __init__(self, req, timeout):
-        fp = urlopen(req, timeout=timeout)
+    def _open_stream(self):
+        conn = self.conn
+        conn.request("GET", self.url, headers=self.request_headers)
+        # FIXME: change conn.sock.timeout here?
+        resp = conn.getresponse()
         try:
-            status = fp.getcode()
-            info = fp.info()
-            if status != 200 or info.getmaintype() != 'multipart':
+            if resp.status != 200 or resp.msg.getmaintype() != 'multipart':
                 raise ConnectionError(
-                    u"Unexpected response: {status}\n{info}\n{body}"
-                    .format(body=fp.read(), **locals()))
-            log.debug("Opened stream\n%s", info)
-            self.boundary = info.getparam('boundary')
-            assert self.boundary is not None
-        except:
-            fp.close()
-            raise
-        else:
-            self.fp = fp
+                    u"Unexpected response: {resp.status}\n"
+                    u"{resp.msg}\n{data}"
+                    .format(data=resp.read(), **locals()))
+            log.debug("Opened stream\n%s", resp.msg)
+            boundary = resp.msg.getparam('boundary')
+            assert boundary
 
-    def close(self):
-        self.fp.close()
+            fp = ReadlineAdapter(resp)
+            while True:
+                sep = fp.readline().rstrip()
+                if not sep:
+                    sep = fp.readline().rstrip()
+                if sep != b'--' + boundary:
+                    if sep != b'--' + boundary + b'--':
+                        raise StreamingError(u"Bad boundary %r" % sep)
+                    break
+                # Testing
+                #if random.randrange(10) < 1:
+                #    raise StreamingError(u"random puke")
+                msg = Message(fp, seekable=0)
+                log.debug("Got part\n%s", msg)
+                content_length = int(msg['content-length'])
+                data = fp.read(content_length)
+                yield VideoFrame(data, msg.gettype())
 
-    def get_frame(self):
-        fp = self.fp
-        try:
-            sep = fp.readline(80)
-            if sep.strip() == '':
-                sep = fp.readline(80)
-            if not sep.startswith('--' + self.boundary):
-                raise StreamingError(u"Bad boundary %r" % sep)
-            # Testing
-            #if random.randrange(10) < 1:
-            #    raise StreamingError(u"random puke")
-            headers = Message(fp, seekable=0)
-            log.debug("Got part\n%s", headers)
-            content_length = int(headers['content-length'])
-            data = fp.read(content_length)
-            return VideoFrame(data, headers['content-type'])
-        except:
-            fp.close()
-            raise
+        finally:
+            resp.close()
+
 
 class WebcamStillStream(object):
+    request_headers = {
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Accept': '*/*',
+        }
+
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
                  connect_timeout=10, max_rate=1.0):
-        headers = {
-            'Connection': 'keep-alive',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Accept': '*/*',
-            'User-Agent': user_agent,
-            }
-        self.req = Request(url, headers=headers)
-        self.connect_timeout = connect_timeout
+        netloc, self.url = _parse_url(url)
+        self.conn = HTTPConnection(netloc, timeout=connect_timeout)
+        self.request_headers = self.request_headers.copy()
+        self.request_headers['User-Agent'] = user_agent
+
         self.frame = None
-        self.closed = False
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
 
     def close(self):
-        self.closed = True
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    @property
+    def closed(self):
+        return not self.conn
 
     def __iter__(self):
         frame = self.get_frame()
@@ -176,34 +186,36 @@ class WebcamStillStream(object):
     def get_frame(self, current_frame=None, timeout=None):
         if self.closed:
             return None
-
         self.rate_limiter()
+        if self.frame in (None, current_frame):
+            conn = self.conn
+            try:
+                if timeout is not None:
+                    conn.connect()
+                    conn.sock.settimeout(timeout)
+                conn.request("GET", self.url, headers=self.request_headers)
+                resp = conn.getresponse()
+                data = resp.read()
+                if resp.status != 200 or resp.msg.getmaintype() != 'image':
+                    raise ConnectionError(
+                        u"Unexpected response: {resp.status}\n"
+                        u"{resp.msg}\n{data}"
+                        .format(**locals()))
+                log.debug("Got image\n%s", resp.msg)
+                self.frame = VideoFrame(data, resp.msg.gettype())
+            except Exception as ex:
+                self.frame = None
+                log.warn("Still capture failed: %s", ex)
+                raise StreamTimeout(unicode(ex))
+        return self.frame
 
-        frame = self.frame
-        if frame and frame is not current_frame:
-            return frame
-
-        try:
-            fp = urlopen(self.req, timeout=self.connect_timeout)
-        except Exception as ex:
-            self.frame = None
-            log.warn("Still connection failed: %s", ex)
-            raise StreamTimeout(unicode(ex))
-        try:
-            status = fp.getcode()
-            info = fp.info()
-            if status != 200 or info.getmaintype() != 'image':
-                raise ConnectionError(
-                    u"Unexpected response: {status}\n{info}\n{body}"
-                    .format(body=fp.read(), **locals()))
-            headers = fp.info()
-            log.debug("Got image\n%s", headers)
-            data = fp.read()
-            self.frame = VideoFrame(data, headers['content-type'])
-            return self.frame
-        except Exception as ex:
-            self.frame = None
-            log.warn("Still capture failed: %s", ex)
-            raise StreamTimeout(unicode(ex))
-        finally:
-            fp.close()
+def _parse_url(url):
+    u = urlparse.urlsplit(url)
+    if u.scheme != 'http':
+        raise ValueError("Only http URLs are currently supported")
+    if u.username or u.password:
+        raise ValueError("HTTP authentication is not currently supported")
+    path = u.path
+    if u.query:
+        path += '?' + u.query
+    return u.netloc, path
