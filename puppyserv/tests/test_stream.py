@@ -3,83 +3,132 @@
 """
 from __future__ import absolute_import
 
+from itertools import repeat
 import tempfile
 import time
 import unittest
 
+from mock import call, sentinel, Mock
+
+from puppyserv.interfaces import StreamTimeout
+
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
 
-class TestVideoFrame(unittest.TestCase):
-    def test_from_file(self):
-        from puppyserv.stream import VideoFrame
+class Test_video_frame_from_file(unittest.TestCase):
+    def call_it(self, filename):
+        from puppyserv.stream import video_frame_from_file
+        return video_frame_from_file(filename)
+
+    def test(self):
         tmpfile = tempfile.NamedTemporaryFile(suffix='.jpg')
         tmpfile.write('IMAGE DATA')
         tmpfile.flush()
-        frame = VideoFrame.from_file(tmpfile.name)
+        frame = self.call_it(tmpfile.name)
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertEqual(frame.image_data, 'IMAGE DATA')
 
-class TestVideoStreamer(unittest.TestCase):
+class TestThreadedStreamBuffer(unittest.TestCase):
     def make_one(self, stream, *args, **kw):
-        from puppyserv.stream import VideoStreamer
-        streamer = VideoStreamer(stream, *args, **kw)
-        self.addCleanup(stream.close)
-        return streamer
+        from puppyserv.stream import ThreadedStreamBuffer
+        stream_buffer = ThreadedStreamBuffer(stream, *args, **kw)
+        self.addCleanup(stream_buffer.close)
+        return stream_buffer
 
     def test_close(self):
-        stream = DummyStream()
-        streamer = self.make_one(stream)
-        self.assertTrue(streamer.is_alive())
-        streamer.close()
+        stream = DummyVideoStream(repeat(DummyFrame()))
+        stream_buffer = self.make_one(stream)
+        self.assertTrue(stream_buffer.is_alive())
+        stream_buffer.close()
         for n in range(10):
-            if not streamer.is_alive():
+            if not stream_buffer.is_alive():
                 break
             time.sleep(0.1)
-        self.assertFalse(streamer.is_alive())
+        self.assertFalse(stream_buffer.is_alive())
 
     def test_get_frame(self):
-        from puppyserv.stream import StreamTimeout
         frame1 = DummyFrame()
         frame2 = DummyFrame()
-        stream = DummyStream([frame1, frame2])
-        streamer = self.make_one(stream)
+        stream = DummyVideoStream([frame1, frame2], max_rate=10)
+        stream_buffer = self.make_one(stream)
 
         with self.assertRaises(StreamTimeout):
-            frame = streamer.get_frame(None, timeout=0.1)
-        frame = streamer.get_frame(None, timeout=0.5)
+            frame = stream_buffer.get_frame(None, timeout=0.05)
+        frame = stream_buffer.get_frame(None, timeout=0.2)
         self.assertIs(frame, frame1)
 
-        with self.assertRaises(StreamTimeout):
-            streamer.get_frame(frame, timeout=0.1)
-        frame = streamer.get_frame(frame, timeout=0.5)
+        frame = stream_buffer.get_frame(None, timeout=0)
+        self.assertIs(frame, frame1)
+
+        frame = stream_buffer.get_frame(frame, timeout=0.2)
         self.assertIs(frame, frame2)
 
-        streamer.close()
-        frame = streamer.get_frame(frame, timeout=0.1)
-        self.assertIs(frame, None)
+        with self.assertRaises(StreamTimeout):
+            stream_buffer.get_frame(frame, timeout=0.1)
+
+class TestTimeoutStreamBuffer(unittest.TestCase):
+    def make_one(self, stream_buffer):
+        from puppyserv.stream import TimeoutStreamBuffer
+        buffer = TimeoutStreamBuffer(stream_buffer)
+        self.addCleanup(buffer.close)
+        return buffer
+
+    def test_close(self):
+        stream_buffer = Mock()
+        buf = self.make_one(stream_buffer)
+        buf.close()
+        stream_buffer.close.assert_called_once_with()
+
+    def test_get_frame(self):
+        stream_buffer = Mock()
+        buf = self.make_one(stream_buffer)
+        frame = buf.get_frame(sentinel.current_frame, sentinel.timeout)
+        self.assertIs(frame, stream_buffer.get_frame.return_value)
+        self.assertEqual(stream_buffer.mock_calls, [
+            call.get_frame(sentinel.current_frame, sentinel.timeout),
+            ])
+
+    def test_get_frame_timeouts(self):
+        from puppyserv.stream import _TimeoutFrame
+        stream_buffer = Mock()
+        stream_buffer.get_frame.side_effect = StreamTimeout
+        buf = self.make_one(stream_buffer)
+        frame = buf.get_frame(sentinel.current_frame, sentinel.timeout)
+        self.assertIsInstance(frame, _TimeoutFrame)
+        self.assertEqual(frame.n_timeouts, 1)
+        self.assertEqual(frame.current_frame, sentinel.current_frame)
+        frame = buf.get_frame(frame, sentinel.timeout)
+        self.assertIsInstance(frame, _TimeoutFrame)
+        self.assertEqual(frame.n_timeouts, 2)
+        self.assertEqual(frame.current_frame, sentinel.current_frame)
+
+        frame = buf.get_frame(frame, sentinel.timeout)
+        self.assertIsInstance(frame, _TimeoutFrame)
+        self.assertEqual(frame.n_timeouts, 3)
+        self.assertEqual(frame.current_frame, sentinel.current_frame)
+
+        self.assertEqual(stream_buffer.mock_calls, [
+            call.get_frame(sentinel.current_frame, sentinel.timeout),
+            call.get_frame(sentinel.current_frame, sentinel.timeout),
+            call.get_frame(sentinel.current_frame, None),
+            ])
 
 class DummyFrame(object):
     pass
 
-class DummyStream(object):
-    def __init__(self, frames=()):
+class DummyVideoStream(object):
+    def __init__(self, frames=(), max_rate=100):
         from puppyserv.util import RateLimiter
         self.frames = iter(frames)
         self.closed = False
-        self.rate_limiter = RateLimiter(2)
+        self.rate_limiter = RateLimiter(max_rate)
         self.rate_limiter()
 
     def close(self):
         self.closed = True
 
-    def get_frame(self, current_frame, timeout=None):
-        from puppyserv.stream import StreamTimeout
+    def next_frame(self):
         if self.closed:
             return None
-        frame = next(self.frames, None)
-        if frame:
-            self.rate_limiter()
-            return frame
-        time.sleep(timeout or 60)
-        raise StreamTimeout()
+        self.rate_limiter()
+        return next(self.frames, None)

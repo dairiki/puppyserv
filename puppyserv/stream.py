@@ -25,25 +25,18 @@ else:
     from threading import Thread, Lock
     from time import sleep
 
+from puppyserv.interfaces import StreamTimeout, VideoBuffer, VideoFrame
+
 log = logging.getLogger(__name__)
 
-class StreamTimeout(Exception):
-    pass
+def video_frame_from_file(filename):
+    content_type, encoding = mimetypes.guess_type(filename)
+    if not content_type:
+        raise ValueError("Can not guess content type")
+    with open(filename, 'rb') as fp:
+        return VideoFrame(fp.read(), content_type)
 
-class VideoFrame(object):
-    def __init__(self, image_data, content_type):
-        self.image_data = image_data
-        self.content_type = content_type
-
-    @classmethod
-    def from_file(cls, filename):
-        content_type, encoding = mimetypes.guess_type(filename)
-        if not content_type:
-            raise ValueError("Can not guess content type")
-        with open(filename, 'rb') as fp:
-            return cls(fp.read(), content_type)
-
-class StaticVideoStream(object):
+class StaticVideoStreamBuffer(VideoBuffer):
     """ A video stream from static images.  For testing.
     """
     def __init__(self, image_filenames, loop=True, frame_rate=4.0):
@@ -94,14 +87,14 @@ def synchronized(method):
             return method(self, *args)
     return wrapper
 
-class VideoStreamer(Thread):
+class ThreadedStreamBuffer(VideoBuffer):
     """ Stream video in a separate thread.
 
     This has good support of the timeout argument to get_frame.
 
     """
     def __init__(self, stream, buffer_size=4):
-        super(VideoStreamer, self).__init__()
+        super(ThreadedStreamBuffer, self).__init__()
 
         self.stream = stream
         self.framebuf = deque(maxlen=buffer_size)
@@ -115,30 +108,33 @@ class VideoStreamer(Thread):
         async.start(self._signal_new_frame)
         self.signal_new_frame = async.send
 
-        self.daemon = True
         self.closed = False
-        self.start()
+        self.runner = Thread(target=self.run)
+        self.runner.daemon = True
+        self.runner.start()
 
     def __repr__(self):
-        rep = super(VideoStreamer, self).__repr__()
+        rep = super(ThreadedStreamBuffer, self).__repr__()
         return rep[:-1] + ': %s>' % repr(self.stream)
 
     def close(self):
         self.closed = True
 
+    def is_alive(self):
+        return self.runner.is_alive()
+
     def run(self):
         log.debug("Capture thread starting: %r", self.stream)
-        frame = None
         while not self.closed:
             try:
-                frame = self.stream.get_frame(frame, timeout=1.0)
+                frame = self.stream.next_frame()
             except StreamTimeout:
                 pass
             else:
-                if frame is None:
-                    self.closed = True
-                else:
+                if frame:
                     self._buffer_frame(frame)
+                else:
+                    self.closed = True
         log.debug("Capture thread terminating: %r", self.stream)
         self.stream.close()
 
@@ -153,20 +149,15 @@ class VideoStreamer(Thread):
         self.new_frame_event = gevent.event.Event()
         new_frame_event.set()
 
-    def __iter__(self):
-        frame = self.get_frame()
-        while frame:
-            yield frame
-            frame = self.get_frame(frame)
-
     def get_frame(self, current_frame=None, timeout=None):
-        if self.closed:
-            return None
         frame = self._get_frame(current_frame)
-        while isinstance(frame, gevent.event.Event):
+        if isinstance(frame, gevent.event.Event):
+            if self.closed:
+                return None
             if not frame.wait(timeout):
                 raise StreamTimeout()
             frame = self._get_frame(current_frame)
+            assert not isinstance(frame, gevent.event.Event)
         return frame
 
     @synchronized
@@ -196,29 +187,30 @@ class VideoStreamer(Thread):
         log.debug("Skipping frames")
         return framebuf[-1]
 
-class FailsafeStream(object):
-    """ A stream which falls back to a backup stream if the primary
-    stream times out.
+class FailsafeStreamBuffer(VideoBuffer):
+    """ A stream bufferwhich falls back to a backup stream buffer if
+    the primary stream buffer times out.
 
     """
-    def __init__(self, primary_stream, backup_stream_factory):
-        self.primary_stream = primary_stream
-        self.backup_stream_factory = backup_stream_factory
-        self.backup_stream = None
+    def __init__(self, primary_buffer, backup_buffer_factory):
+        self.primary_buffer = primary_buffer
+        self.backup_buffer_factory = backup_buffer_factory
+        self.backup_buffer = None
         self.closed = False
 
     def close(self):
         self.closed = True
-        self.primary_stream.close()
-        if self.backup_stream:
-            self.backup_stream.close()
-            self.backup_stream = None
+        self.primary_buffer.close()
+        if self.backup_buffer:
+            self.backup_buffer.close()
+            self.backup_buffer = None
 
-    def __iter__(self):
-        frame = self.get_frame()
-        while frame:
-            yield frame
-            frame = self.get_frame(frame)
+    # FIXME: delete
+    # def __iter__(self):
+    #     frame = self.get_frame()
+    #     while frame:
+    #         yield frame
+    #         frame = self.get_frame(frame)
 
     def get_frame(self, current_frame=None, timeout=None):
         if self.closed:
@@ -242,13 +234,13 @@ class FailsafeStream(object):
 
         primary_frame = getattr(current_frame, 'primary_frame', current_frame)
 
-        primary = self.primary_stream
-        backup = self.backup_stream
+        primary = self.primary_buffer
+        backup = self.backup_buffer
 
         if backup:
-            # We're current streaming from the backup stream
+            # We're current streaming from the backup buffer
             try:
-                # Check to see if primary stream is back up
+                # Check to see if primary buffer is back up
                 frame = primary.get_frame(primary_frame, timeout=0)
             except StreamTimeout:
                 # It's not...
@@ -256,52 +248,56 @@ class FailsafeStream(object):
                 frame.primary_frame = primary_frame
                 return frame
             else:
-                # Primary stream working again, close backup stream
+                # Primary buffer working again, close backup buffer
                 log.info("Switching to primary stream")
                 backup.close()
-                self.backup_stream = None
+                self.backup_buffer = None
                 return frame
         else:
             try:
                 return primary.get_frame(primary_frame, timeout=timeout)
             except StreamTimeout:
                 log.info("Switching to backup stream")
-                self.backup_stream = self.backup_stream_factory()
+                self.backup_buffer = self.backup_buffer_factory()
                 raise
 
-class TimeoutStream(object):
+class TimeoutStreamBuffer(VideoBuffer):
     """ A stream wrapper which substitutes a frame with a 'timed out' message
-    when the wrapped stream times out.
+    when the wrapped stream buffer times out.
 
     """
-    def __init__(self, stream, frame_timeout=10):
-        self.stream = stream
-        self.frame_timeout = frame_timeout
+    def __init__(self, stream_buffer):
+        self.stream_buffer = stream_buffer
 
         # FIXME: make timeout image configurable
         timeout_image = resource_filename('puppyserv', 'timeout.jpg')
         self.timeout_frame = VideoFrame.from_file(timeout_image)
 
     def close(self):
-        self.stream.close()
+        self.stream_buffer.close()
 
-    def __iter__(self):
-        current_frame = None
-        n_timeouts = 0
-        while True:
-            timeout = self.frame_timeout if n_timeouts < 2 else None
-            try:
-                frame = self.stream.get_frame(current_frame, timeout=timeout)
-            except StreamTimeout:
-                n_timeouts += 1
-                yield self.timeout_frame
-            else:
-                n_timeouts = 0
-                current_frame = frame
-                if frame is None:
-                    break
-                yield frame
+    @staticmethod
+    def is_timeout(frame):
+        return isinstance(frame, _TimeoutFrame)
 
     def get_frame(self, current_frame=None, timeout=None):
-        # XXX: not sure how this should behave
-        return self.stream.get_frame(current_frame, timeout)
+        if isinstance(current_frame, _TimeoutFrame):
+            n_timeouts = current_frame.n_timeouts
+            current_frame = current_frame.current_frame
+            if n_timeouts > 1:
+                timeout = None
+        else:
+            n_timeouts = 0
+        try:
+            return self.stream_buffer.get_frame(current_frame, timeout)
+        except StreamTimeout:
+            return _TimeoutFrame(self.timeout_frame,
+                                     current_frame=current_frame,
+                                     n_timeouts=n_timeouts + 1)
+
+class _TimeoutFrame(VideoFrame):
+    def __init__(self, frame, current_frame, n_timeouts):
+        super(_TimeoutFrame, self).__init__(frame.image_data,
+                                            frame.content_type)
+        self.current_frame = current_frame
+        self.n_timeouts = n_timeouts

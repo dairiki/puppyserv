@@ -18,7 +18,7 @@ from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
 from puppyserv.stats import StreamStatManager
-from puppyserv.stream import StaticVideoStream, TimeoutStream
+from puppyserv.stream import StaticVideoStreamBuffer, TimeoutStreamBuffer
 from puppyserv.webcam import webcam_stream_from_settings
 
 log = logging.getLogger(__name__)
@@ -65,30 +65,32 @@ def main(global_config, **settings):
                           ('frame_timeout', 5.0),
                           ('stop_stream_holdoff', 15.0)])
 
-    frame_timeout = config.pop('frame_timeout')
-
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
-        def stream_factory():
-            #return VideoStreamer(StaticVideoStream(image_files))
-            return StaticVideoStream(image_files)
+        def stream_buffer_factory():
+            return TimeoutStreamBuffer(StaticVideoStreamBuffer(image_files))
     else:
-        def stream_factory():
-            stream = webcam_stream_from_settings(settings,
+        def stream_buffer_factory():
+            buffer = webcam_stream_from_settings(settings,
                                                  user_agent=SERVER_NAME)
-            return TimeoutStream(stream, frame_timeout)
+            return TimeoutStreamBuffer(buffer)
 
     log.info("App starting!")
-    return VideoStreamApp(stream_factory, **config)
+    return VideoStreamApp(stream_buffer_factory, **config)
 
 class VideoStreamApp(object):
 
     boundary = b'puppyserv-92af5f768c28fad8'
 
-    def __init__(self, stream_factory, max_total_framerate=10, **kwargs):
+    def __init__(self, stream_buffer_factory,
+                 max_total_framerate=10,
+                 frame_timeout=5,
+                 **kwargs):
         assert max_total_framerate > 0
+        assert frame_timeout > 0
         self.max_total_framerate = max_total_framerate
-        self.stream_manager = StreamManager(stream_factory, **kwargs)
+        self.frame_timeout = frame_timeout
+        self.buffer_manager = BufferManager(stream_buffer_factory, **kwargs)
         self.stats = StreamStatManager()
 
 
@@ -110,10 +112,13 @@ class VideoStreamApp(object):
 
     @_GET_only
     def snapshot(self, request):
-        with self.stream_manager as stream:
-            frame = next(iter(stream))
-            if frame is stream.timeout_frame:
+        with self.buffer_manager as stream_buffer:
+            frame = stream_buffer.get_frame(timeout=self.frame_timeout)
+            if not frame:
+                # XXX: maybe different error?
                 return HTTPGatewayTimeout('Not connected to webcam')
+            if TimeoutStreamBuffer.is_timeout(frame):
+                return HTTPGatewayTimeout('webcam connection timed out')
         return Response(
             cache_control='no-cache',
             content_type=frame.content_type,
@@ -121,21 +126,24 @@ class VideoStreamApp(object):
 
 
     def _app_iter(self, request):
-        stream_manager = self.stream_manager
+        buffer_manager = self.buffer_manager
+        frame_timeout = self.frame_timeout
         max_total_framerate = self.max_total_framerate
         with self.stats(request.client_addr) as stats:
-            with stream_manager as stream:
+            with buffer_manager as stream_buffer:
                 t0 = time.time()
-                for frame in stream:
+                frame = stream_buffer.get_frame(timeout=frame_timeout)
+                while frame:
                     stats.got_frame()
                     yield self._part_for_frame(frame)
 
-                    n_clients = stream_manager.n_clients
+                    n_clients = buffer_manager.n_clients
                     wait_until = t0 + n_clients / max_total_framerate
                     now = time.time()
                     if wait_until > now:
                         gevent.sleep(wait_until - now)
                     t0 = max(wait_until, now)
+                    frame = stream_buffer.get_frame(frame, frame_timeout)
 
             yield b'--' + self.boundary + b'--' + EOL
 
@@ -149,12 +157,12 @@ class VideoStreamApp(object):
             data, EOL,
             ])
 
-class StreamManager(object):
-    def __init__(self, stream_factory, stop_stream_holdoff=15):
+class BufferManager(object):
+    def __init__(self, buffer_factory, stop_stream_holdoff=15):
         self.stop_stream_holdoff = stop_stream_holdoff
         self._n_clients = 0
-        self.stream_factory = stream_factory
-        self._stream = None
+        self.buffer_factory = buffer_factory
+        self._buffer = None
         self._stopper = None
 
     @property
@@ -167,21 +175,21 @@ class StreamManager(object):
         if self._n_clients == 0:
             self._start_stream()
         self._n_clients += 1
-        log.debug("StreamManager: nclients = %d", self._n_clients)
-        return self._stream
+        log.debug("BufferManager: nclients = %d", self._n_clients)
+        return self._buffer
 
     def __exit__(self, exc_type, exc_value, exc_tb):
         assert self._n_clients > 0
         self._n_clients -= 1
         if self._n_clients == 0:
             self._stop_stream()
-        log.debug("StreamManager: nclients = %d", self._n_clients)
+        log.debug("BufferManager: nclients = %d", self._n_clients)
 
     def _start_stream(self):
         assert self._n_clients == 0
-        if not self._stream:
-            self._stream = self.stream_factory()
-            log.info("Started stream capture %r", self._stream)
+        if not self._buffer:
+            self._buffer = self.buffer_factory()
+            log.info("Started stream capture %r", self._buffer)
         else:
             assert not self._stopper.ready()
             self._stopper.kill(block=False)
@@ -189,11 +197,11 @@ class StreamManager(object):
 
     def _stop_stream(self):
         assert self._n_clients == 0
-        assert self._stream
+        assert self._buffer
         assert not self._stopper
         def stop_stream():
-            log.info("Stopped stream capture %r", self._stream)
-            self._stream.close()
-            self._stream = None
+            log.info("Stopped stream capture %r", self._buffer)
+            self._buffer.close()
+            self._buffer = None
         holdoff = self.stop_stream_holdoff
         self._stopper = gevent.spawn_later(holdoff, stop_stream)

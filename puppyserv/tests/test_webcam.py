@@ -12,7 +12,7 @@ from webob.dec import wsgify
 from webob.exc import HTTPNotFound
 from webob import Response
 
-from puppyserv.stream import StreamTimeout
+from puppyserv.interfaces import StreamTimeout
 from puppyserv.testing import StopableWSGIServer
 
 if not hasattr(unittest.TestCase, 'addCleanup'):
@@ -31,31 +31,29 @@ class WebcamStreamTests(object):
     def test_connection_failure(self):
         stream = self.make_one('not_found')
         with self.assertRaises(StreamTimeout):
-            stream.get_frame(timeout=0.1)
+            stream.next_frame()
 
     def test_bad_content_type(self):
         stream = self.make_one('')
         with self.assertRaises(StreamTimeout):
-            stream.get_frame(timeout=0.1)
+            stream.next_frame()
 
-    def test_get_frame_returns_none_if_closed(self):
+    def test_next_frame_returns_none_if_closed(self):
         stream = self.make_one()
         stream.close()
-        frame = stream.get_frame(timeout=0.01)
+        frame = stream.next_frame()
         self.assertIs(frame, None)
-
-    def test_get_frame_returns_cached_frame(self):
-        stream = self.make_one()
-        frame = stream.get_frame(timeout=0.1)
-        frame2 = stream.get_frame(timeout=0.1)
-        self.assertEqual(frame2.image_data, frame.image_data)
 
 
 class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
-    def make_one(self, path='stream', frame_delay=0.05, bad_boundary=False,
+    def make_one(self, path='stream',
+                 initial_delay=0, frame_delay=0.05, bad_boundary=False,
                  max_rate=1000, connect_timeout = 0.1, **kwargs):
         from puppyserv.webcam import WebcamVideoStream
-        query = {'delay': frame_delay}
+        query = {
+            'initial_delay': initial_delay,
+            'frame_delay': frame_delay,
+            }
         if bad_boundary:
             query['bad_boundary'] = '1'
         qs = urlencode(query)
@@ -68,50 +66,37 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
     def test_bad_boundary(self):
         stream = self.make_one(bad_boundary=True)
         with self.assertRaises(StreamTimeout):
-            stream.get_frame(timeout=0.1)
+            stream.next_frame()
 
-    def test_get_frame(self):
+    def test_next_frame(self):
         t0 = time.time()
-        #stream = self.make_one(frame_delay=0.1)
-        stream = self.make_one(frame_delay=0.1, connect_timeout=0.15)
-
-        frame = stream.get_frame(timeout=0.15)
+        stream = self.make_one(frame_delay=0.01, connect_timeout=0.05)
+        frame = stream.next_frame()
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertRegexpMatches(frame.image_data, '^frame 1')
 
-        frame = stream.get_frame(frame, timeout=0.1)
+        frame = stream.next_frame()
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertRegexpMatches(frame.image_data, '^frame 2')
 
         self.assertLess(time.time() - t0, .3)
 
-    def test_iter(self):
-        stream = self.make_one()
-        frames = iter(stream)
-        frame = next(frames)
-        self.assertEqual(frame.content_type, 'image/jpeg')
-        self.assertRegexpMatches(frame.image_data, '^frame 1')
-
-        frame = next(frames)
-        self.assertEqual(frame.content_type, 'image/jpeg')
-        self.assertRegexpMatches(frame.image_data, '^frame 2')
-
-    def test_get_frame_timeout(self):
-        #stream = self.make_one(frame_delay=0.1)
-        stream = self.make_one(frame_delay=0.1, connect_timeout=0.15)
-
-        frame = stream.get_frame(timeout=0.15)
+    def test_next_frame_timeout(self):
+        stream = self.make_one(frame_delay=0.1, connect_timeout=0.05)
+        frame = stream.next_frame()
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertRegexpMatches(frame.image_data, '^frame 1')
         with self.assertRaises(StreamTimeout):
-            stream.get_frame(timeout=0.01)
+            stream.next_frame()
 
 class TestWebcamStillStream(unittest.TestCase, WebcamStreamTests):
-    def make_one(self, path='snapshot', frame_delay=0,
+    def make_one(self, path='snapshot',
+                 initial_delay=0, frame_delay=0,
                  max_rate=1000, connect_timeout = 0.1, **kwargs):
         from puppyserv.webcam import WebcamStillStream
         qs = urlencode({
-            'delay': frame_delay,
+            'initial_delay': initial_delay,
+            'frame_delay': frame_delay,
             })
         url = test_server.application_url + path + '?' + qs
         stream = WebcamStillStream(url, max_rate=max_rate,
@@ -119,30 +104,23 @@ class TestWebcamStillStream(unittest.TestCase, WebcamStreamTests):
         self.addCleanup(stream.close)
         return stream
 
-    def test_get_frame(self):
+    def test_next_frame(self):
         stream = self.make_one(frame_delay=0)
-        frame = stream.get_frame(timeout=0.05)
+        frame = stream.next_frame()
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertRegexpMatches(frame.image_data, '^image data')
 
-    def test_get_frame_timeout(self):
-        stream = self.make_one(frame_delay=0.2, connect_timeout=0.25)
+    def test_next_frame_timeout(self):
+        stream = self.make_one(initial_delay=0.2, connect_timeout=0.15)
         with self.assertRaises(StreamTimeout) as cm:
-            stream.get_frame(timeout=0.05)
-
-    def test_iter(self):
-        stream = self.make_one()
-        frames = iter(stream)
-        for n in range(2):
-            frame = next(frames)
-            self.assertEqual(frame.content_type, 'image/jpeg')
-            self.assertRegexpMatches(frame.image_data, '^image data')
+            stream.next_frame()
 
 
 class DummyWebcam(object):
     def __init__(self, request):
         self.request = request
-        self.delay = float(request.params.get('delay', 0))
+        self.initial_delay = float(request.params.get('initial_delay', 0))
+        self.frame_delay = float(request.params.get('frame_delay', 0))
         self.pad = int(request.params.get('pad', 4096))
         self.boundary = request.params.get('boundary', b'boundary')
         self.bad_boundary = bool(request.params.get('bad_boundary', 0))
@@ -185,10 +163,11 @@ class DummyWebcam(object):
             )
 
     def app_iter(self, chunks, map_function=lambda x: x):
-        yield b''                       # flush headers
+        if self.initial_delay > 0:
+            time.sleep(self.initial_delay)
         for chunk in chunks:
-            if self.delay > 0:
-                time.sleep(self.delay)
             if len(chunk) < self.pad:
                 chunk += b' ' * (self.pad - len(chunk))
             yield map_function(chunk)
+            if self.frame_delay > 0:
+                time.sleep(self.frame_delay)
