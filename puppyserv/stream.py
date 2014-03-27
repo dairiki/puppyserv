@@ -284,8 +284,11 @@ class TimeoutStreamBuffer(VideoBuffer):
         if isinstance(current_frame, _TimeoutFrame):
             n_timeouts = current_frame.n_timeouts
             current_frame = current_frame.current_frame
-            if n_timeouts > 1:
-                timeout = None
+            if n_timeouts > 1 and timeout is not None:
+                # Don't need to send the same frame too often.
+                # But do send it periodically so that we detect client
+                # disconnects in a timely manner.
+                timeout = max(timeout, 60)
         else:
             n_timeouts = 0
         try:
