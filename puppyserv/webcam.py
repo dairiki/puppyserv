@@ -71,7 +71,7 @@ class WebcamVideoStream(VideoStream):
         self.stream = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
-        self.open_rate_limiter = RateLimiter(1.0 / socket_timeout)
+        self.open_rate_limiter = RateLimiter(1.0 / socket_timeout, backoff=1.5)
 
     @classmethod
     def from_settings(cls, settings, prefix='webcam.', subprefix='stream.',
@@ -99,7 +99,9 @@ class WebcamVideoStream(VideoStream):
             if self.stream is None:
                 self.open_rate_limiter()
                 self.stream = self._open_stream()
-            return next(self.stream, None)
+            frame = next(self.stream, None)
+            self.open_rate_limiter.reset()
+            return frame
         except Exception as ex:
             self.stream = None
             log.warn("Streaming failed: %s", text_type(ex) or repr(ex))
@@ -170,6 +172,7 @@ class WebcamStillStream(VideoStream):
 
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
+        self.open_rate_limiter = RateLimiter(1.0 / socket_timeout, backoff=1.5)
 
     @classmethod
     def from_settings(cls, settings, prefix='webcam.', subprefix='still.',
@@ -190,6 +193,7 @@ class WebcamStillStream(VideoStream):
     def next_frame(self):
         if self.closed:
             return None
+        self.open_rate_limiter()
         self.rate_limiter()
         try:
             self.conn.request("GET", self.url, headers=self.request_headers)
@@ -201,6 +205,7 @@ class WebcamStillStream(VideoStream):
                     u"{resp.msg}\n{data}"
                     .format(**locals()))
             log.debug("Got image\n%s", resp.msg)
+            self.open_rate_limiter.reset()
             return VideoFrame(data, resp.msg.gettype())
         except Exception as ex:
             log.warn("Still capture failed: %s", text_type(ex) or repr(ex))

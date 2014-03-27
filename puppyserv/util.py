@@ -3,6 +3,7 @@
 """
 from __future__ import absolute_import
 
+from itertools import repeat
 import time
 
 try:
@@ -11,8 +12,25 @@ except ImportError:                     # pragma: NO COVER
     from time import sleep
 
 class RateLimiter(object):
-    def __init__(self, max_rate):
-        self.dt = 1.0/max_rate
+    def __init__(self, max_rate, backoff=1.0, max_delay=180):
+        dt0 = 1.0 / max_rate
+        if backoff and backoff > 1:
+            def deltas():
+                dt = dt0
+                while True:
+                    yield dt
+                    dt = min(dt * backoff, max_delay)
+            self.deltas = deltas
+        else:
+            self.deltas = lambda : repeat(dt0)
+
+        self.max_rate = max_rate
+        self.backoff = backoff
+        self.max_delay = max_delay
+        self.reset()
+
+    def reset(self):
+        self.dt = self.deltas()
         self.wait_until = None
 
     def __call__(self):
@@ -20,9 +38,9 @@ class RateLimiter(object):
         wait_until = self.wait_until
         if wait_until and wait_until > now:
             sleep(wait_until - now)
-            self.wait_until += self.dt
+            self.wait_until += next(self.dt)
         else:
-            self.wait_until = now + self.dt
+            self.wait_until = now + next(self.dt)
 
 class ReadlineAdapter(object):
     """ This adapter add a .readline() method to basic file-like objects
