@@ -207,4 +207,7 @@ class BufferManager(object):
             self._buffer.close()
             self._buffer = None
         holdoff = self.stop_stream_holdoff
-        self._stopper = gevent.spawn_later(holdoff, stop_stream)
+        if holdoff > 0:
+            self._stopper = gevent.spawn_later(holdoff, stop_stream)
+        else:
+            stop_stream()
