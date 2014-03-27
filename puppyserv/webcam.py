@@ -56,29 +56,32 @@ def stream_buffer_from_settings(settings, **kwargs):
     raise NotConfiguredError(
         'Neither webcam streaming nor still capture was configured')
 
-class WebcamVideoStream(VideoStream):
+
+class WebcamStreamBase(VideoStream):
+    request_headers = {
+        'Accept': '*/*',
+        }
+
     def __init__(self, url,
                  max_rate=3.0,
                  socket_timeout=10,
                  user_agent=DEFAULT_USER_AGENT):
         netloc, self.url = _parse_url(url)
         self.conn = HTTPConnection(netloc, timeout=socket_timeout)
-        self.request_headers = {
-            'Accept': '*/*',
-            'User-Agent': user_agent,
-            }
+        self.request_headers = self.request_headers.copy()
+        self.request_headers['User-Agent'] = user_agent
 
         self.stream = None
-        self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
         self.open_rate_limiter = RateLimiter(1.0 / socket_timeout, backoff=1.5)
 
     @classmethod
-    def from_settings(cls, settings, prefix='webcam.', subprefix='stream.',
-                      **defaults):
+    def from_settings(cls, settings, prefix='webcam.', **defaults):
         config = config_from_settings(settings, prefix=prefix,
-                                      subprefix=subprefix, **defaults)
+                                      subprefix=cls.settings_subprefix,
+                                      **defaults)
         return cls(**config)
+
 
     def close(self):
         if self.stream:
@@ -107,6 +110,9 @@ class WebcamVideoStream(VideoStream):
             log.warn("Streaming failed: %s", text_type(ex) or repr(ex))
             self.conn.close()
             raise StreamTimeout(unicode(ex))
+
+class WebcamVideoStream(WebcamStreamBase):
+    settings_subprefix = 'stream.'
 
     def _open_stream(self):
         self.conn.request("GET", self.url, headers=self.request_headers)
@@ -153,7 +159,7 @@ class WebcamVideoStream(VideoStream):
             resp.close()
 
 
-class WebcamStillStream(VideoStream):
+class WebcamStillStream(WebcamStreamBase):
     request_headers = {
         'Connection': 'keep-alive',
         'Cache-Control': 'no-cache',
@@ -161,41 +167,10 @@ class WebcamStillStream(VideoStream):
         'Accept': '*/*',
         }
 
-    def __init__(self, url,
-                 max_rate=1.0,
-                 socket_timeout=10,
-                 user_agent=DEFAULT_USER_AGENT):
-        netloc, self.url = _parse_url(url)
-        self.conn = HTTPConnection(netloc, timeout=socket_timeout)
-        self.request_headers = self.request_headers.copy()
-        self.request_headers['User-Agent'] = user_agent
+    settings_subprefix = 'still.'
 
-        self.max_rate = max_rate
-        self.rate_limiter = RateLimiter(max_rate)
-        self.open_rate_limiter = RateLimiter(1.0 / socket_timeout, backoff=1.5)
-
-    @classmethod
-    def from_settings(cls, settings, prefix='webcam.', subprefix='still.',
-                      **defaults):
-        config = config_from_settings(settings, prefix=prefix,
-                                      subprefix=subprefix, **defaults)
-        return cls(**config)
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-
-    @property
-    def closed(self):
-        return not self.conn
-
-    def next_frame(self):
-        if self.closed:
-            return None
-        self.open_rate_limiter()
-        self.rate_limiter()
-        try:
+    def _open_stream(self):
+        while True:
             self.conn.request("GET", self.url, headers=self.request_headers)
             resp = self.conn.getresponse()
             data = resp.read()
@@ -205,12 +180,7 @@ class WebcamStillStream(VideoStream):
                     u"{resp.msg}\n{data}"
                     .format(**locals()))
             log.debug("Got image\n%s", resp.msg)
-            self.open_rate_limiter.reset()
-            return VideoFrame(data, resp.msg.gettype())
-        except Exception as ex:
-            log.warn("Still capture failed: %s", text_type(ex) or repr(ex))
-            self.conn.close()
-            raise StreamTimeout(unicode(ex))
+            yield VideoFrame(data, resp.msg.gettype())
 
 def config_from_settings(settings, prefix='webcam.', subprefix=None,
                          **defaults):
