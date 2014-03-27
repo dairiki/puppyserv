@@ -5,14 +5,14 @@ from __future__ import absolute_import
 
 import logging
 from mimetools import Message
-import random
 import urlparse
 
+from six import text_type
 from six.moves.http_client import HTTPConnection
 
 from puppyserv.interfaces import StreamTimeout, VideoFrame, VideoStream
 from puppyserv.stream import FailsafeStreamBuffer, ThreadedStreamBuffer
-from puppyserv.util import sleep, RateLimiter, ReadlineAdapter
+from puppyserv.util import RateLimiter, ReadlineAdapter
 
 DEFAULT_USER_AGENT = 'puppyserv (<dairiki@dairiki.org>)'
 
@@ -25,51 +25,44 @@ class ConnectionError(Error):
 class StreamingError(Error):
     pass
 
-def webcam_stream_from_settings(settings, prefix='webcam.', **defaults):
-    defaults.update(_get_config(settings, prefix))
-    stream_config = _get_config(settings, prefix + 'stream.')
-    still_config = _get_config(settings, prefix + 'still.')
-    for key in ['max_rate', 'timeout', 'user_agent']:
-        if key in defaults:
-            stream_config.setdefault(key, defaults[key])
-            still_config.setdefault(key, defaults[key])
+class NotConfiguredError(Error, ValueError):
+    pass
 
-    def still_buffer_factory():
-        return ThreadedStreamBuffer(WebcamStillStream(**still_config))
-
-    if 'url' in stream_config:
-        video_buffer = ThreadedStreamBuffer(WebcamVideoStream(**stream_config))
-        if 'url' in still_config:
-            return FailsafeStreamBuffer(video_buffer, still_buffer_factory)
-        else:
-            return video_buffer
+def stream_buffer_from_settings(settings, **kwargs):
+    try:
+        video_stream = WebcamVideoStream.from_settings(settings, **kwargs)
+    except NotConfiguredError:
+        video_buffer = None
     else:
-        assert 'url' in still_config
+        video_buffer = ThreadedStreamBuffer(video_stream)
+
+    try:
+        still_config = config_from_settings(settings, subprefix='still.',
+                                            **kwargs)
+    except NotConfiguredError:
+        still_buffer_factory = None
+    else:
+        def still_buffer_factory():
+            still_stream = WebcamStillStream(**still_config)
+            return ThreadedStreamBuffer(still_stream)
+
+
+    if video_buffer and still_buffer_factory:
+        return FailsafeStreamBuffer(video_buffer, still_buffer_factory)
+    elif video_buffer:
+        return video_buffer
+    elif still_buffer_factory:
         return still_buffer_factory()
-
-def _get_config(settings, prefix='webcam.'):
-    config = {}
-    for key, coerce in [('url', lambda s: s.strip()),
-                        ('max_rate', float),
-                        ('timeout', float),
-                        ('connect_timeout', float)]:
-        if prefix + key in settings:
-            config[key] = coerce(settings[prefix + key])
-
-    # b/c: connect_timeout has been renamed to timeout
-    connect_timeout = config.pop('connect_timeout', None)
-    if connect_timeout:
-        config.setdefault('timeout', connect_timeout)
-
-    return config
+    raise NotConfiguredError(
+        'Neither webcam streaming nor still capture was configured')
 
 class WebcamVideoStream(VideoStream):
     def __init__(self, url,
-                 timeout=10,
                  max_rate=3.0,
+                 socket_timeout=10,
                  user_agent=DEFAULT_USER_AGENT):
         netloc, self.url = _parse_url(url)
-        self.conn = HTTPConnection(netloc, timeout=timeout)
+        self.conn = HTTPConnection(netloc, timeout=socket_timeout)
         self.request_headers = {
             'Accept': '*/*',
             'User-Agent': user_agent,
@@ -78,7 +71,14 @@ class WebcamVideoStream(VideoStream):
         self.stream = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
-        self.open_rate_limiter = RateLimiter(1.0 / timeout)
+        self.open_rate_limiter = RateLimiter(1.0 / socket_timeout)
+
+    @classmethod
+    def from_settings(cls, settings, prefix='webcam.', subprefix='stream.',
+                      **defaults):
+        config = config_from_settings(settings, prefix=prefix,
+                                      subprefix=subprefix, **defaults)
+        return cls(**config)
 
     def close(self):
         if self.stream:
@@ -95,8 +95,6 @@ class WebcamVideoStream(VideoStream):
         if self.closed:
             return None
         self.rate_limiter()
-        #if random.randrange(10) < 1:
-        #    sleep(10)
         try:
             if self.stream is None:
                 self.open_rate_limiter()
@@ -153,15 +151,24 @@ class WebcamStillStream(VideoStream):
         'Accept': '*/*',
         }
 
-    def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
-                 timeout=10, max_rate=1.0):
+    def __init__(self, url,
+                 max_rate=1.0,
+                 socket_timeout=10,
+                 user_agent=DEFAULT_USER_AGENT):
         netloc, self.url = _parse_url(url)
-        self.conn = HTTPConnection(netloc, timeout=timeout)
+        self.conn = HTTPConnection(netloc, timeout=socket_timeout)
         self.request_headers = self.request_headers.copy()
         self.request_headers['User-Agent'] = user_agent
 
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
+
+    @classmethod
+    def from_settings(cls, settings, prefix='webcam.', subprefix='still.',
+                      **defaults):
+        config = config_from_settings(settings, prefix=prefix,
+                                      subprefix=subprefix, **defaults)
+        return cls(**config)
 
     def close(self):
         if self.conn:
@@ -190,6 +197,37 @@ class WebcamStillStream(VideoStream):
         except Exception as ex:
             log.warn("Still capture failed: %s", ex)
             raise StreamTimeout(unicode(ex))
+
+def config_from_settings(settings, prefix='webcam.', subprefix=None,
+                         **defaults):
+    config = _get_config(defaults, prefix='')
+    config.update(_get_config(settings, prefix))
+    if subprefix:
+        config.update(_get_config(settings, prefix + subprefix))
+
+    # b/c: connect_timeout has been renamed to timeout
+    connect_timeout = config.pop('connect_timeout', None)
+    if connect_timeout:
+        config.setdefault('socket_timeout', connect_timeout)
+
+    if not config.get('url'):
+        raise NotConfiguredError("No url is configured")
+
+    return config
+
+def _get_config(settings, prefix='webcam.'):
+    def _strip(s):
+        return text_type(s).strip()
+    config = {}
+    for key, coerce in [('url', _strip),
+                        ('max_rate', float),
+                        ('socket_timeout', float),
+                        ('user_agent', _strip),
+                        ('connect_timeout', float)]:
+        if prefix + key in settings:
+            config[key] = coerce(settings[prefix + key])
+
+    return config
 
 def _parse_url(url):
     u = urlparse.urlsplit(url)

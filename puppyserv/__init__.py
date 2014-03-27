@@ -17,9 +17,9 @@ from webob import Response
 from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
+from puppyserv import webcam
 from puppyserv.stats import StreamStatManager
 from puppyserv.stream import StaticVideoStreamBuffer, TimeoutStreamBuffer
-from puppyserv.webcam import webcam_stream_from_settings
 
 log = logging.getLogger(__name__)
 
@@ -68,12 +68,15 @@ def main(global_config, **settings):
     if 'static.images' in settings:
         image_files = sorted(glob.glob(settings['static.images']))
         def stream_buffer_factory():
-            return TimeoutStreamBuffer(StaticVideoStreamBuffer(image_files))
+            test_stream_buffer = StaticVideoStreamBuffer(image_files)
+            return TimeoutStreamBuffer(test_stream_buffer)
     else:
         def stream_buffer_factory():
-            buffer = webcam_stream_from_settings(settings,
-                                                 user_agent=SERVER_NAME)
-            return TimeoutStreamBuffer(buffer)
+            stream_buffer = webcam.stream_buffer_from_settings(
+                settings,
+                user_agent=SERVER_NAME,
+                )
+            return TimeoutStreamBuffer(stream_buffer)
 
     log.info("App starting!")
     return VideoStreamApp(stream_buffer_factory, **config)
