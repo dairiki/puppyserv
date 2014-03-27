@@ -128,6 +128,7 @@ class _Stream(object):
             raise
         else:
             self.fp = fp
+            self.content_type = None
 
     def close(self):
         self.fp.close()
@@ -144,9 +145,18 @@ class _Stream(object):
             #if random.randrange(10) < 1:
             #    raise StreamingError(u"random puke")
             headers = Message(fp, seekable=0)
-            log.debug("Got part\n%s", headers)
             content_length = int(headers['content-length'])
             data = fp.read(content_length)
+            if self.content_type:
+                bad_type = headers.gettype() != self.content_type
+            else:
+                bad_type = headers.getmaintype() != 'image'
+                self.content_type = headers.gettype()
+            if bad_type:
+                raise ConnectionError(
+                    u"Frame has unexpected content-type:\n{headers}\n{data}"
+                    .format(**locals()))
+            log.debug("Got part\n%s", headers)
             return VideoFrame(data, headers['content-type'])
         except:
             fp.close()
