@@ -108,6 +108,7 @@ class WebcamVideoStream(VideoStream):
     def _open_stream(self):
         self.conn.request("GET", self.url, headers=self.request_headers)
         resp = self.conn.getresponse()
+        content_type = None
         try:
             if resp.status != 200 or resp.msg.getmaintype() != 'multipart':
                 raise ConnectionError(
@@ -129,14 +130,20 @@ class WebcamVideoStream(VideoStream):
                     if sep != b'--' + boundary + b'--':
                         raise StreamingError(u"Bad boundary %r" % sep)
                     break
-                # Testing
-                #if random.randrange(10) < 1:
-                #    raise StreamingError(u"random puke")
                 msg = Message(fp, seekable=0)
-                log.debug("Got part\n%s", msg)
                 content_length = int(msg['content-length'])
                 # XXX: impose maximum limit on content_length?
                 data = fp.read(content_length)
+                if content_type:
+                    bad_type = msg.gettype() != content_type
+                else:
+                    bad_type = msg.getmaintype() != 'image'
+                    content_type = msg.gettype()
+                if bad_type:
+                    raise StreamingError(
+                        u"Unexpected content-type\n{msg}\n{data}"
+                        .format(**locals()))
+                log.debug("Got part\n%s", msg)
                 yield VideoFrame(data, msg.gettype())
 
         finally:

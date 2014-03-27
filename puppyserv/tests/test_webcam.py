@@ -108,6 +108,20 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
         with self.assertRaises(StreamTimeout):
             stream.next_frame()
 
+    def test_non_image_in_stream(self):
+        stream = self.make_one()
+        self.send_frame(DummyVideoFrame(content_type='text/plain'))
+        with self.assertRaises(StreamTimeout):
+            stream.next_frame()
+
+    def test_non_uniform_image_type_in_stream(self):
+        stream = self.make_one()
+        self.send_frame(DummyVideoFrame(content_type='image/jpeg'))
+        stream.next_frame()
+        self.send_frame(DummyVideoFrame(content_type='image/png'))
+        with self.assertRaises(StreamTimeout):
+            stream.next_frame()
+
 class TestWebcamStillStream(unittest.TestCase, WebcamStreamTests):
     default_path = 'snapshot'
 
@@ -155,12 +169,12 @@ class Test_config_from_settings(unittest.TestCase):
 class DummyVideoFrame(VideoFrame):
     counter = count(1)
 
-    def __init__(self, size=4096):
+    def __init__(self, content_type='image/jpeg', size=4096):
         image_data = b'IMAGE %d' % next(self.counter)
         pad = size - len(image_data)
         if pad > 0:
             image_data += b'\0' * pad
-        super(DummyVideoFrame, self).__init__(content_type='image/jpeg',
+        super(DummyVideoFrame, self).__init__(content_type=content_type,
                                               image_data=image_data)
 
     def __eq__(self, other):
