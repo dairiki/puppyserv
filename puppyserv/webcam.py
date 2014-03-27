@@ -102,7 +102,8 @@ class WebcamVideoStream(VideoStream):
             return next(self.stream, None)
         except Exception as ex:
             self.stream = None
-            log.warn("Streaming failed: %s", ex)
+            log.warn("Streaming failed: %s", text_type(ex) or repr(ex))
+            self.conn.close()
             raise StreamTimeout(unicode(ex))
 
     def _open_stream(self):
@@ -202,7 +203,8 @@ class WebcamStillStream(VideoStream):
             log.debug("Got image\n%s", resp.msg)
             return VideoFrame(data, resp.msg.gettype())
         except Exception as ex:
-            log.warn("Still capture failed: %s", ex)
+            log.warn("Still capture failed: %s", text_type(ex) or repr(ex))
+            self.conn.close()
             raise StreamTimeout(unicode(ex))
 
 def config_from_settings(settings, prefix='webcam.', subprefix=None,
