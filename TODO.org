@@ -34,14 +34,16 @@
   - [ ] Move supervisor config into buildout
   - [ ] Move nginx config into buildout
   - [ ] Set perms on log dir a uwsgi socket
+* TODO Check Accepts: header
+  If doesn't accept multipart/x-m-r serve snapshot
+  or failure
 * DONE Check request_method
   CLOSED: [2014-03-26 Wed 07:46]
   :LOGBOOK:
   - State "DONE"       from "TODO"       [2014-03-26 Wed 07:46]
   :END:
   Handle HEAD correctly, returns error for other methods
-
-* DONE Fix the Failsafe stream still stream starting logic.
+* DONE Fix the Failsafe stream still stream starting logic
   CLOSED: [2014-03-26 Wed 08:49]
   :LOGBOOK:
   - State "DONE"       from "TODO"       [2014-03-26 Wed 08:49]
