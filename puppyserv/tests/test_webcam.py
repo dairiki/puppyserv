@@ -48,7 +48,7 @@ class WebcamStreamTests(object):
 class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
     def make_one(self, path='stream',
                  initial_delay=0, frame_delay=0.05, bad_boundary=False,
-                 max_rate=1000, connect_timeout = 0.1, **kwargs):
+                 **kwargs):
         from puppyserv.webcam import WebcamVideoStream
         query = {
             'initial_delay': initial_delay,
@@ -58,8 +58,11 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
             query['bad_boundary'] = '1'
         qs = urlencode(query)
         url = test_server.application_url + path + '?' + qs
-        stream = WebcamVideoStream(url, max_rate=max_rate,
-                                   connect_timeout=connect_timeout, **kwargs)
+
+        kwargs.setdefault('max_rate', 1000)
+        kwargs.setdefault('timeout', 0.1)
+
+        stream = WebcamVideoStream(url, **kwargs)
         self.addCleanup(stream.close)
         return stream
 
@@ -70,7 +73,7 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
 
     def test_next_frame(self):
         t0 = time.time()
-        stream = self.make_one(frame_delay=0.01, connect_timeout=0.05)
+        stream = self.make_one(frame_delay=0.01, timeout=0.05)
         frame = stream.next_frame()
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertRegexpMatches(frame.image_data, '^frame 1')
@@ -82,7 +85,7 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
         self.assertLess(time.time() - t0, .3)
 
     def test_next_frame_timeout(self):
-        stream = self.make_one(frame_delay=0.1, connect_timeout=0.05)
+        stream = self.make_one(frame_delay=0.1, timeout=0.05)
         frame = stream.next_frame()
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertRegexpMatches(frame.image_data, '^frame 1')
@@ -90,17 +93,18 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
             stream.next_frame()
 
 class TestWebcamStillStream(unittest.TestCase, WebcamStreamTests):
-    def make_one(self, path='snapshot',
-                 initial_delay=0, frame_delay=0,
-                 max_rate=1000, connect_timeout = 0.1, **kwargs):
+    def make_one(self, path='snapshot', initial_delay=0, frame_delay=0,
+                 **kwargs):
         from puppyserv.webcam import WebcamStillStream
         qs = urlencode({
             'initial_delay': initial_delay,
             'frame_delay': frame_delay,
             })
         url = test_server.application_url + path + '?' + qs
-        stream = WebcamStillStream(url, max_rate=max_rate,
-                                   connect_timeout=connect_timeout, **kwargs)
+
+        kwargs.setdefault('max_rate', 1000)
+        kwargs.setdefault('timeout', 0.1)
+        stream = WebcamStillStream(url, **kwargs)
         self.addCleanup(stream.close)
         return stream
 
@@ -111,7 +115,7 @@ class TestWebcamStillStream(unittest.TestCase, WebcamStreamTests):
         self.assertRegexpMatches(frame.image_data, '^image data')
 
     def test_next_frame_timeout(self):
-        stream = self.make_one(initial_delay=0.2, connect_timeout=0.15)
+        stream = self.make_one(initial_delay=0.2, timeout=0.15)
         with self.assertRaises(StreamTimeout) as cm:
             stream.next_frame()
 

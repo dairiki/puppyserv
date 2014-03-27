@@ -29,7 +29,7 @@ def webcam_stream_from_settings(settings, prefix='webcam.', **defaults):
     defaults.update(_get_config(settings, prefix))
     stream_config = _get_config(settings, prefix + 'stream.')
     still_config = _get_config(settings, prefix + 'still.')
-    for key in ['max_rate', 'connect_timeout', 'user_agent']:
+    for key in ['max_rate', 'timeout', 'user_agent']:
         if key in defaults:
             stream_config.setdefault(key, defaults[key])
             still_config.setdefault(key, defaults[key])
@@ -51,19 +51,25 @@ def _get_config(settings, prefix='webcam.'):
     config = {}
     for key, coerce in [('url', lambda s: s.strip()),
                         ('max_rate', float),
+                        ('timeout', float),
                         ('connect_timeout', float)]:
         if prefix + key in settings:
             config[key] = coerce(settings[prefix + key])
+
+    # b/c: connect_timeout has been renamed to timeout
+    connect_timeout = config.pop('connect_timeout', None)
+    if connect_timeout:
+        config.setdefault('timeout', connect_timeout)
+
     return config
 
 class WebcamVideoStream(VideoStream):
     def __init__(self, url,
-                 connect_timeout=10,
-                 read_timeout=5,
+                 timeout=10,
                  max_rate=3.0,
                  user_agent=DEFAULT_USER_AGENT):
         netloc, self.url = _parse_url(url)
-        self.conn = HTTPConnection(netloc, timeout=connect_timeout)
+        self.conn = HTTPConnection(netloc, timeout=timeout)
         self.request_headers = {
             'Accept': '*/*',
             'User-Agent': user_agent,
@@ -72,7 +78,7 @@ class WebcamVideoStream(VideoStream):
         self.stream = None
         self.max_rate = max_rate
         self.rate_limiter = RateLimiter(max_rate)
-        self.open_rate_limiter = RateLimiter(1.0 / connect_timeout)
+        self.open_rate_limiter = RateLimiter(1.0 / timeout)
 
     def close(self):
         if self.stream:
@@ -148,9 +154,9 @@ class WebcamStillStream(VideoStream):
         }
 
     def __init__(self, url, user_agent=DEFAULT_USER_AGENT,
-                 connect_timeout=10, max_rate=1.0):
+                 timeout=10, max_rate=1.0):
         netloc, self.url = _parse_url(url)
-        self.conn = HTTPConnection(netloc, timeout=connect_timeout)
+        self.conn = HTTPConnection(netloc, timeout=timeout)
         self.request_headers = self.request_headers.copy()
         self.request_headers['User-Agent'] = user_agent
 
