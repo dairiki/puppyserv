@@ -93,24 +93,12 @@ class TestTimeoutStreamBuffer(unittest.TestCase):
         stream_buffer = Mock()
         stream_buffer.get_frame.side_effect = StreamTimeout
         buf = self.make_one(stream_buffer)
-        frame = buf.get_frame(sentinel.current_frame, 12)
+        frame = buf.get_frame(sentinel.current_frame, sentinel.timeout)
         self.assertIsInstance(frame, _TimeoutFrame)
-        self.assertEqual(frame.n_timeouts, 1)
-        self.assertEqual(frame.current_frame, sentinel.current_frame)
-        frame = buf.get_frame(frame, 12)
-        self.assertIsInstance(frame, _TimeoutFrame)
-        self.assertEqual(frame.n_timeouts, 2)
-        self.assertEqual(frame.current_frame, sentinel.current_frame)
-
-        frame = buf.get_frame(frame, 12)
-        self.assertIsInstance(frame, _TimeoutFrame)
-        self.assertEqual(frame.n_timeouts, 3)
         self.assertEqual(frame.current_frame, sentinel.current_frame)
 
         self.assertEqual(stream_buffer.mock_calls, [
-            call.get_frame(sentinel.current_frame, 12),
-            call.get_frame(sentinel.current_frame, 12),
-            call.get_frame(sentinel.current_frame, 60),
+            call.get_frame(sentinel.current_frame, sentinel.timeout),
             ])
 
 class DummyFrame(object):
