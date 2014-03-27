@@ -81,6 +81,16 @@ class WebcamStreamTests(object):
             self.assertEqual(frame, source_frame)
         self.assertLess(time.time() - t0, .3)
 
+    def test_max_rate(self):
+        t0 = time.time()
+        stream = self.make_one(max_rate=10)
+        for n in range(4):
+            source_frame = DummyVideoFrame()
+            self.send_frame(source_frame)
+            frame = stream.next_frame()
+            self.assertEqual(frame, source_frame)
+        self.assertGreater(time.time() - t0, .3)
+
     def test_next_frame_timeout(self):
         stream = self.make_one()
         self.send_frame()
