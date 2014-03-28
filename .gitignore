@@ -21,3 +21,4 @@
 
 /htmlcov/
 /.coverage
+/.tox/
