@@ -1,4 +1,4 @@
-include development.ini
+include development.ini CHANGES.rst
 
 recursive-include puppyserv *.jpg
 prune test/orig
