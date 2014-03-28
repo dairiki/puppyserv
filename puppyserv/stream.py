@@ -11,19 +11,12 @@ import time
 
 from pkg_resources import resource_filename
 
-try:
-    import gevent
-    import gevent.event
-except ImportError:
-    gevent = None
+import gevent
+import gevent.event
+import gevent.lock
+import gevent.monkey
 
-if gevent:
-    from gevent.monkey import get_original
-    Thread, Lock = get_original('threading', ['Thread', 'Lock'])
-    sleep = gevent.sleep
-else:
-    from threading import Thread, Lock
-    from time import sleep
+Thread, Lock = gevent.monkey.get_original('threading', ['Thread', 'Lock'])
 
 from puppyserv.interfaces import StreamTimeout, VideoBuffer, VideoFrame
 
@@ -63,9 +56,9 @@ class StaticVideoStreamBuffer(VideoBuffer):
 
         wait = (int(index) + 1 - index) / self.frame_rate
         if timeout and timeout < wait:
-            sleep(timeout)
+            gevent.sleep(timeout)
             raise StreamTimeout()
-        sleep(wait)
+        gevent.sleep(wait)
         return self._get_frame(index + 1)
 
     def _get_frame(self, index):
@@ -195,6 +188,7 @@ class FailsafeStreamBuffer(VideoBuffer):
         self.backup_buffer_factory = backup_buffer_factory
         self.backup_buffer = None
         self.closed = False
+        self.mutex = gevent.lock.Semaphore()
 
     def close(self):
         self.closed = True
@@ -247,17 +241,28 @@ class FailsafeStreamBuffer(VideoBuffer):
                 return frame
             else:
                 # Primary buffer working again, close backup buffer
-                log.info("Switching to primary stream")
-                backup.close()
-                self.backup_buffer = None
+                self._stop_backup()
                 return frame
         else:
             try:
                 return primary.get_frame(primary_frame, timeout)
             except StreamTimeout:
+                self._start_backup()
+                raise
+
+    def _start_backup(self):
+        with self.mutex:
+            if self.backup_buffer is None:
                 log.info("Switching to backup stream")
                 self.backup_buffer = self.backup_buffer_factory()
-                raise
+
+    def _stop_backup(self):
+        with self.mutex:
+            backup = self.backup_buffer
+            if backup is not None:
+                log.info("Switching to primary stream")
+                backup.close()
+                self.backup_buffer = None
 
 class TimeoutStreamBuffer(VideoBuffer):
     """ A stream wrapper which substitutes a frame with a 'timed out' message
