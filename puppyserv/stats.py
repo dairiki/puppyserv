@@ -12,8 +12,6 @@ import gevent
 import gevent.monkey
 Lock, = gevent.monkey.get_original('threading', ['Lock'])
 
-from webhelpers.number import format_byte_size
-
 log = logging.getLogger(__name__)
 
 @contextmanager
