@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
-from itertools import repeat
 import tempfile
 import time
 import unittest
 
+from pkg_resources import resource_filename
+from six.moves import queue
 import gevent
-from mock import call, patch, sentinel, Mock
+from mock import patch
 
-from puppyserv.interfaces import StreamTimeout
+from puppyserv.interfaces import VideoBuffer, VideoStream
 
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
@@ -29,43 +30,145 @@ class Test_video_frame_from_file(unittest.TestCase):
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertEqual(frame.image_data, 'IMAGE DATA')
 
+    def test_unguessable_type(self):
+        with self.assertRaises(ValueError):
+            frame = self.call_it('foobar')
+
+class TestStaticVideoStreamBuffer(unittest.TestCase):
+    def setUp(self):
+        self.t = 0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, wait):
+        self.t += max(0, wait)
+
+    def make_one(self, frames, **kwargs):
+        from puppyserv.stream import StaticVideoStreamBuffer
+        patcher = patch.multiple(StaticVideoStreamBuffer,
+                                 time=self.time, sleep=self.sleep)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        stream_buffer = StaticVideoStreamBuffer(frames, **kwargs)
+        return stream_buffer
+
+    def test_from_settings(self):
+        from puppyserv.stream import StaticVideoStreamBuffer
+        settings = {
+            'static.images': resource_filename('puppyserv', 'timeout.jpg'),
+            'static.loop': '1',
+            'static.frame_rate': '42',
+            }
+        buf = StaticVideoStreamBuffer.from_settings(settings)
+        self.assertEqual(len(buf.frames), 1)
+        self.assertEqual(buf.frames[0].content_type, 'image/jpeg')
+        self.assertIs(buf.loop, True)
+        self.assertAlmostEqual(buf.frame_rate, 42.0)
+
+    def test_close(self):
+        buf = self.make_one(['frame1'], loop=True)
+        stream = buf.stream()
+        buf.close()
+        with self.assertRaises(StopIteration):
+            next(stream)
+
+    def test_loop(self):
+        buf = self.make_one(['frame1', 'frame2'], loop=True)
+        stream = buf.stream()
+        self.assertEqual(next(stream), 'frame1')
+        self.assertEqual(self.t, 0)
+        self.assertEqual(next(stream), 'frame2')
+        self.assertEqual(self.t, 0.25)
+        self.assertEqual(next(stream), 'frame1')
+        self.assertEqual(self.t, 0.5)
+        self.assertEqual(next(stream), 'frame2')
+        self.assertEqual(self.t, 0.75)
+
+    def test_noloop(self):
+        buf = self.make_one(['frame1', 'frame2'], loop=False)
+        stream = buf.stream()
+        self.assertEqual(next(stream), 'frame1')
+        self.assertEqual(self.t, 0)
+        self.assertEqual(next(stream), 'frame2')
+        self.assertEqual(self.t, 0.25)
+        with self.assertRaises(StopIteration):
+            next(stream)
+
 class TestThreadedStreamBuffer(unittest.TestCase):
-    def make_one(self, stream, *args, **kw):
+    def make_one(self, stream, **kwargs):
         from puppyserv.stream import ThreadedStreamBuffer
-        stream_buffer = ThreadedStreamBuffer(stream, *args, **kw)
+        kwargs.setdefault('timeout', 0.1)
+        stream_buffer = ThreadedStreamBuffer(stream, **kwargs)
         self.addCleanup(stream_buffer.close)
         return stream_buffer
 
+    def test_repr(self):
+        source = DummyVideoStream()
+        stream_buffer = self.make_one(source)
+        self.assertRegexpMatches(
+            repr(stream_buffer),
+            r'<ThreadedStreamBuffer \[Thread-\d+\] <.*DummyVideoStream.*>>')
+
     def test_close(self):
-        stream = DummyVideoStream(repeat(DummyFrame()))
-        stream_buffer = self.make_one(stream)
+        source = DummyVideoStream()
+        stream_buffer = self.make_one(source)
         self.assertTrue(stream_buffer.is_alive())
         stream_buffer.close()
         for n in range(10):
+            source.put('frame')
             if not stream_buffer.is_alive():
                 break
             time.sleep(0.1)
         self.assertFalse(stream_buffer.is_alive())
 
-    def test_get_frame(self):
-        frame1 = DummyFrame()
-        frame2 = DummyFrame()
-        stream = DummyVideoStream([frame1, frame2], max_rate=10)
-        stream_buffer = self.make_one(stream)
+    def test_source_closed(self):
+        source = DummyVideoStream(timeout=0.01)
+        stream_buffer = self.make_one(source, timeout=0.05, buffer_size=2)
+        stream = stream_buffer.stream()
 
-        with self.assertRaises(StreamTimeout):
-            frame = stream_buffer.get_frame(None, timeout=0.05)
-        frame = stream_buffer.get_frame(None, timeout=0.2)
-        self.assertIs(frame, frame1)
+        source.close()
+        with self.assertRaises(StopIteration):
+            next(stream)
+        self.assertFalse(stream_buffer.is_alive())
 
-        frame = stream_buffer.get_frame(None, timeout=0)
-        self.assertIs(frame, frame1)
+    def test_stream(self):
+        source = DummyVideoStream(timeout=0.1)
+        stream_buffer = self.make_one(source, timeout=0.05, buffer_size=2)
+        stream = stream_buffer.stream()
 
-        frame = stream_buffer.get_frame(frame, timeout=0.2)
-        self.assertIs(frame, frame2)
+        self.assertIs(next(stream), None) # timeout
 
-        with self.assertRaises(StreamTimeout):
-            stream_buffer.get_frame(frame, timeout=0.1)
+        source.put('frame1')
+        source.put('frame2')
+        self.assertIs(next(stream), 'frame1')
+        self.assertIs(next(stream), 'frame2')
+
+    def test_skipped_frames(self):
+        source = DummyVideoStream()
+        stream_buffer = self.make_one(source, timeout=0.1, buffer_size=2)
+        stream = stream_buffer.stream()
+
+        # Need to start the iterator
+        source.put('frame0')
+        self.assertIs(next(stream), 'frame0')
+
+        source.put('frame1')
+        source.put('frame2')
+        source.put('frame3')
+        gevent.sleep(0.05)
+        self.assertIs(next(stream), 'frame2')
+        self.assertIs(next(stream), 'frame3')
+        self.assertIs(next(stream), None) # timeout
+
+    def test_wait_for_frame(self):
+        source = DummyVideoStream(timeout=0.5)
+        stream_buffer = self.make_one(source, timeout=0.5, buffer_size=1)
+        stream = stream_buffer.stream()
+
+        gevent.spawn_later(0.2, source.put, 'frame1')
+        self.assertIs(next(stream), 'frame1')
 
 class TestFailsafeStreamBuffer(unittest.TestCase):
     def make_one(self, primary_buffer, backup_buffer_factory):
@@ -74,126 +177,139 @@ class TestFailsafeStreamBuffer(unittest.TestCase):
         self.addCleanup(buffer.close)
         return buffer
 
-    def test_returns_none_if_closed(self):
-        primary_buffer = Mock(name='primary_buffer')
-        backup_buffer_factory = Mock(name='backup_buffer_factory', spec=())
+    def test_stops_iteration_if_closed(self):
+        primary_buffer = DummyBuffer()
+        backup_buffer_factory = DummyBuffer
         failsafe = self.make_one(primary_buffer, backup_buffer_factory)
         failsafe.close()
-        frame = failsafe.get_frame(None, 1)
-        self.assertIs(frame, None)
+        self.assertTrue(primary_buffer.closed)
+        with self.assertRaises(StopIteration):
+            next(failsafe.stream())
 
-    def test_long_timeout(self):
-        failsafe = self.make_one(Mock(), Mock())
+    def test_stops_iteration_if_closed_on_backup(self):
+        primary_buffer = DummyBuffer()
+        backup_buffer_factory = DummyBuffer
+        failsafe = self.make_one(primary_buffer, backup_buffer_factory)
+        stream = failsafe.stream()
 
-        with patch.object(failsafe, '_get_frame') as get_frame:
-            frame = failsafe.get_frame(None, 200)
-        self.assertIs(frame, get_frame.return_value)
-        self.assertEqual(get_frame.mock_calls, [call(None, 10)])
+        primary_buffer.put(None)
+        self.assertEqual(next(stream), None)
 
-        with patch.object(failsafe, '_get_frame') as get_frame:
-            get_frame.side_effect = StreamTimeout
-            with self.assertRaises(StreamTimeout):
-                failsafe.get_frame(None, 15)
-        self.assertEqual(get_frame.mock_calls, [
-            call(None, 10),
-            call(None, 5),
-            ])
+        backup_buffer = failsafe.backup_buffer
+        self.assertIsNot(backup_buffer, None)
+
+        failsafe.close()
+        self.assertTrue(primary_buffer.closed)
+        self.assertTrue(backup_buffer.closed)
+        self.assertIs(failsafe.backup_buffer, None)
+        with self.assertRaises(StopIteration):
+            next(failsafe.stream())
 
     def test_failover_and_recovery(self):
-        primary_buffer = Mock(name='primary_buffer')
-        backup_buffer_factory = Mock(name='backup_buffer_factory', spec=())
-        backup_buffer = backup_buffer_factory.return_value
+        primary_buffer = DummyBuffer()
+        backup_buffer_factory = DummyBuffer()
         failsafe = self.make_one(primary_buffer, backup_buffer_factory)
+        stream = failsafe.stream()
 
-        frame1 = failsafe.get_frame(None, 1)
-        self.assertIs(frame1, primary_buffer.get_frame.return_value)
+        primary_buffer.put('frame1')
+        self.assertEqual(next(stream), 'frame1')
 
-        primary_buffer.get_frame.side_effect = StreamTimeout
-        with self.assertRaises(StreamTimeout):
-            failsafe.get_frame(frame1, 1)
-        self.assertEqual(backup_buffer_factory.mock_calls, [call()])
+        primary_buffer.put(None)
+        self.assertIs(failsafe.backup_buffer, None)
+        self.assertEqual(next(stream), None)
+        self.assertIsNot(failsafe.backup_buffer, None)
 
-        frame2 = failsafe.get_frame(frame1, 1)
-        self.assertIs(frame2, backup_buffer.get_frame.return_value)
+        backup_buffer_factory.put('backup1')
+        self.assertEqual(next(stream), 'backup1')
+        gevent.sleep()
 
-        primary_buffer.get_frame.side_effect = None
-        frame3 = failsafe.get_frame(frame1, 1)
-        self.assertIs(frame3, primary_buffer.get_frame.return_value)
-        self.assertEqual(backup_buffer_factory.mock_calls, [
-            call(),
-            call().get_frame(frame1, 1),
-            call().close(),
-            ])
+        primary_buffer.put('frame2')
+        primary_buffer.put('frame3')
+        self.assertIsNot(failsafe.backup_buffer, None)
+        primary_buffer.put('frame4')
+        self.assertIs(failsafe.backup_buffer, None)
 
-    def test_concurrent_primary_timeouts(self):
-        # Check that if two clients both hit primary timeouts simultaneously
-        # only one manages to create a backup buffer
-        def primary_get_frame(current_frame, timeout):
-            gevent.sleep(timeout)
-            raise StreamTimeout()
-        primary_buffer = Mock(get_frame=primary_get_frame)
-        backup_buffer_factory = Mock(spec=())
+        primary_buffer.put('frame5')
+        self.assertEqual(next(stream), 'frame5')
 
+    def test_primary_stream_terminates_while_on_backup(self):
+        primary_buffer = DummyBuffer()
+        backup_buffer_factory = DummyBuffer
         failsafe = self.make_one(primary_buffer, backup_buffer_factory)
-        def client():
-            with self.assertRaises(StreamTimeout):
-                failsafe.get_frame(None, 0.1)
-        client2 = gevent.spawn(client)
-        client()
-        client2.join()
-        self.assertEqual(backup_buffer_factory.mock_calls, [call()])
+        stream = failsafe.stream()
 
-class TestTimeoutStreamBuffer(unittest.TestCase):
-    def make_one(self, stream_buffer):
-        from puppyserv.stream import TimeoutStreamBuffer
-        buffer = TimeoutStreamBuffer(stream_buffer)
-        self.addCleanup(buffer.close)
-        return buffer
+        primary_buffer.put(None)
+        self.assertEqual(next(stream), None)
+        self.assertIsNot(failsafe.backup_buffer, None)
 
-    def test_close(self):
-        stream_buffer = Mock()
-        buf = self.make_one(stream_buffer)
-        buf.close()
-        stream_buffer.close.assert_called_once_with()
+        primary_buffer.close()
+        gevent.sleep()
+        self.assertIs(failsafe.backup_buffer, None)
 
-    def test_get_frame(self):
-        stream_buffer = Mock()
-        buf = self.make_one(stream_buffer)
-        frame = buf.get_frame(sentinel.current_frame, sentinel.timeout)
-        self.assertIs(frame, stream_buffer.get_frame.return_value)
-        self.assertEqual(stream_buffer.mock_calls, [
-            call.get_frame(sentinel.current_frame, sentinel.timeout),
-            ])
+        with self.assertRaises(StopIteration):
+            next(stream)
 
-    def test_get_frame_timeouts(self):
-        from puppyserv.stream import _TimeoutFrame
-        stream_buffer = Mock()
-        stream_buffer.get_frame.side_effect = StreamTimeout
-        buf = self.make_one(stream_buffer)
-        frame = buf.get_frame(sentinel.current_frame, sentinel.timeout)
-        self.assertIsInstance(frame, _TimeoutFrame)
-        self.assertEqual(frame.current_frame, sentinel.current_frame)
-
-        self.assertEqual(stream_buffer.mock_calls, [
-            call.get_frame(sentinel.current_frame, sentinel.timeout),
-            ])
 
 class DummyFrame(object):
     pass
 
-class DummyVideoStream(object):
-    def __init__(self, frames=(), max_rate=100):
-        from puppyserv.util import BucketRateLimiter
-        self.frames = iter(frames)
+class DummyVideoStream(VideoStream):
+    def __init__(self, timeout=None):
+        self.timeout = timeout
+        self.frame_queue = queue.Queue()
         self.closed = False
-        self.rate_limiter = BucketRateLimiter(max_rate, 1)
-        next(self.rate_limiter)
 
     def close(self):
         self.closed = True
 
-    def next_frame(self):
+    def put(self, frame):
+        self.frame_queue.put(frame)
+
+    def next(self):
+        if not self.closed:
+            try:
+                frame = self.frame_queue.get(timeout=self.timeout)
+            except queue.Empty:
+                frame = None                # timeout
         if self.closed:
-            return None
-        next(self.rate_limiter)
-        return next(self.frames, None)
+            raise StopIteration()
+        return frame
+
+class DummyBuffer(VideoBuffer):
+    def __init__(self):
+        self.buf = []
+        self.event = gevent.event.Event()
+        self.closed = False
+
+    # hokism - serve as own factory
+    def __call__(self):
+        return self
+
+    def close(self):
+        self.closed = True
+        self.event.set()
+
+    def put(self, frame):
+        self.buf.append(frame)
+        event = self.event
+        self.event = gevent.event.Event()
+        event.set()
+        gevent.sleep(0)
+
+    def stream(self):
+        return self.Iterator(self)
+
+    class Iterator(object):
+        def __init__(self, parent):
+            self.parent = parent
+            self.i = max(0, len(parent.buf) - 1)
+
+        def next(self):
+            parent = self.parent
+            if self.i == len(parent.buf) and not parent.closed:
+                parent.event.wait()
+            if parent.closed:
+                raise StopIteration()
+            frame = parent.buf[self.i]
+            self.i += 1
+            return frame

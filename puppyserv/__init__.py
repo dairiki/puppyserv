@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 from datetime import datetime
 from functools import wraps
-import glob
 import logging
 import logging.config
-from pkg_resources import get_distribution
-import time
+from pkg_resources import get_distribution, resource_filename
 
 import gevent
 
@@ -18,8 +16,9 @@ from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
 from puppyserv import webcam
+from puppyserv.interfaces import VideoFrame
 from puppyserv.stats import StreamStatManager
-from puppyserv.stream import StaticVideoStreamBuffer, TimeoutStreamBuffer
+from puppyserv.stream import StaticVideoStreamBuffer
 from puppyserv.util import BucketRateLimiter
 
 log = logging.getLogger(__name__)
@@ -66,18 +65,17 @@ def main(global_config, **settings):
                           ('frame_timeout', 5.0),
                           ('stop_stream_holdoff', 15.0)])
 
+    timeout_image = settings.get('timeout_image')
+
+    frame_timeout = config.pop('frame_timeout')
+
     if 'static.images' in settings:
-        image_files = sorted(glob.glob(settings['static.images']))
         def stream_buffer_factory():
-            test_stream_buffer = StaticVideoStreamBuffer(image_files)
-            return TimeoutStreamBuffer(test_stream_buffer)
+            return StaticVideoStreamBuffer.from_settings(settings)
     else:
         def stream_buffer_factory():
-            stream_buffer = webcam.stream_buffer_from_settings(
-                settings,
-                user_agent=SERVER_NAME,
-                )
-            return TimeoutStreamBuffer(stream_buffer)
+            return webcam.stream_buffer_from_settings(
+                settings, frame_timeout=frame_timeout, user_agent=SERVER_NAME)
 
     log.info("App starting!")
     return VideoStreamApp(stream_buffer_factory, **config)
@@ -88,15 +86,15 @@ class VideoStreamApp(object):
 
     def __init__(self, stream_buffer_factory,
                  max_total_framerate=10,
-                 frame_timeout=5,
+                 timeout_image=None,
                  **kwargs):
+        if timeout_image is None:
+            timeout_image = resource_filename('puppyserv', 'timeout.jpg')
         assert max_total_framerate > 0
-        assert frame_timeout > 0
         self.max_total_framerate = max_total_framerate
-        self.frame_timeout = frame_timeout
         self.buffer_manager = BufferManager(stream_buffer_factory, **kwargs)
         self.stats = StreamStatManager()
-
+        self.timeout_frame = VideoFrame.from_file(timeout_image)
 
     @wsgify
     def __call__(self, request):
@@ -117,11 +115,12 @@ class VideoStreamApp(object):
     @_GET_only
     def snapshot(self, request):
         with self.buffer_manager as stream_buffer:
-            frame = stream_buffer.get_frame(timeout=self.frame_timeout)
-            if not frame:
+            try:
+                frame = next(stream_buffer.stream())
+            except StopIteration:
                 # XXX: maybe different error?
                 return HTTPGatewayTimeout('Not connected to webcam')
-            if TimeoutStreamBuffer.is_timeout(frame):
+            if frame is None:
                 return HTTPGatewayTimeout('webcam connection timed out')
         return Response(
             cache_control='no-cache',
@@ -138,10 +137,9 @@ class VideoStreamApp(object):
         with self.stats(request.client_addr) as stats:
             with self.buffer_manager as stream_buffer:
                 limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=4)
-                for _ in limiter:
-                    frame = stream_buffer.get_frame(frame, self.frame_timeout)
+                for frame in limiter(stream_buffer.stream()):
                     if frame is None:
-                        break
+                        frame = self.timeout_frame
                     limiter.max_rate = max_rate()
                     stats.got_frame()
                     yield self._part_for_frame(frame)

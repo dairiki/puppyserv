@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 import unittest
 
@@ -9,6 +9,43 @@ from six import BytesIO, moves
 
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
+
+class Test_asbool(unittest.TestCase):
+    def _callFUT(self, s):
+        from puppyserv.util import asbool
+        return asbool(s)
+
+    def test_s_is_None(self):
+        result = self._callFUT(None)
+        self.assertEqual(result, False)
+
+    def test_s_is_True(self):
+        result = self._callFUT(True)
+        self.assertEqual(result, True)
+
+    def test_s_is_False(self):
+        result = self._callFUT(False)
+        self.assertEqual(result, False)
+
+    def test_s_is_true(self):
+        result = self._callFUT('True')
+        self.assertEqual(result, True)
+
+    def test_s_is_false(self):
+        result = self._callFUT('False')
+        self.assertEqual(result, False)
+
+    def test_s_is_yes(self):
+        result = self._callFUT('yes')
+        self.assertEqual(result, True)
+
+    def test_s_is_on(self):
+        result = self._callFUT('on')
+        self.assertEqual(result, True)
+
+    def test_s_is_1(self):
+        result = self._callFUT(1)
+        self.assertEqual(result, True)
 
 class RateLimiterTestBase(unittest.TestCase):
     def setUp(self):
@@ -26,7 +63,12 @@ class RateLimiterTestBase(unittest.TestCase):
         limiter.sleep = self.sleep
         return limiter
 
-class TestBucketRateLimiter(RateLimiterTestBase):
+class RateLimiterTestMixin(object):
+    def test_is_iterator(self):
+        limiter = self.make_one(10)
+        self.assertIs(iter(limiter), limiter)
+
+class TestBucketRateLimiter(RateLimiterTestBase, RateLimiterTestMixin):
     @property
     def limiter_class(self):
         from puppyserv.util import BucketRateLimiter
@@ -90,7 +132,12 @@ class TestBucketRateLimiter(RateLimiterTestBase):
         for n, _ in moves.zip(range(10), limiter):
             self.assertEqual(self.t, n)
 
-class TestBackofRateLimiter(RateLimiterTestBase):
+    def test_wrap_iterator(self):
+        limiter = self.make_one(2.0, 1)
+        for n in limiter(n for n in range(10)):
+            self.assertEqual(self.t, n / 2)
+
+class TestBackofRateLimiter(RateLimiterTestBase, RateLimiterTestMixin):
     @property
     def limiter_class(self):
         from puppyserv.util import BackoffRateLimiter

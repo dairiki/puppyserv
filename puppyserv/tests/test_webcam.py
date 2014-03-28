@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 from itertools import count
 import time
@@ -13,7 +13,7 @@ from webob.dec import wsgify
 from webob.exc import HTTPNotFound
 from webob import Response
 
-from puppyserv.interfaces import StreamTimeout, VideoFrame
+from puppyserv.interfaces import VideoFrame
 from puppyserv.testing import StopableWSGIServer
 
 if not hasattr(unittest.TestCase, 'addCleanup'):
@@ -28,6 +28,41 @@ def setUpModule():
 def tearDownModule():
     global test_server
     test_server.shutdown()
+
+class Test_stream_buffer_from_settings(unittest.TestCase):
+    def call_it(self, settings, **kwargs):
+        from puppyserv.webcam import stream_buffer_from_settings
+        return stream_buffer_from_settings(settings, **kwargs)
+
+    def test_config_failsafe_buffer(self):
+        from puppyserv.stream import FailsafeStreamBuffer
+        settings = {
+            'webcam.stream.url': 'http://example.com/',
+            'webcam.still.url': 'http://example.com/snap',
+            }
+        buf = self.call_it(settings)
+        self.assertIsInstance(buf, FailsafeStreamBuffer)
+
+    def test_config_video_buffer(self):
+        from puppyserv.webcam import WebcamVideoStream
+        settings = {
+            'webcam.stream.url': 'http://example.com/',
+            }
+        buf = self.call_it(settings)
+        self.assertIsInstance(buf.source, WebcamVideoStream)
+
+    def test_config_still_buffer(self):
+        from puppyserv.webcam import WebcamStillStream
+        settings = {
+            'webcam.still.url': 'http://example.com/',
+            }
+        buf = self.call_it(settings)
+        self.assertIsInstance(buf.source, WebcamStillStream)
+
+    def test_unconfigured(self):
+        from puppyserv.webcam import NotConfiguredError
+        with self.assertRaises(NotConfiguredError):
+            self.call_it({})
 
 class WebcamStreamTests(object):
     def make_one(self, path=None, **kwargs):
@@ -59,18 +94,15 @@ class WebcamStreamTests(object):
             'webcam.socket_timeout': '1.0',
             }
         stream = self.stream_class.from_settings(settings)
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        self.assertIs(next(stream), None)
 
     def test_connection_failure(self):
         stream = self.make_one('not_found')
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        self.assertIs(next(stream), None)
 
     def test_bad_content_type(self):
         stream = self.make_one('')
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        self.assertIs(next(stream), None)
 
     def test_next_frame(self):
         t0 = time.time()
@@ -78,7 +110,7 @@ class WebcamStreamTests(object):
         for n in range(4):
             source_frame = DummyVideoFrame()
             self.send_frame(source_frame)
-            frame = stream.next_frame()
+            frame = next(stream)
             self.assertEqual(frame, source_frame)
         self.assertLess(time.time() - t0, .3)
 
@@ -88,22 +120,23 @@ class WebcamStreamTests(object):
         for n in range(4):
             source_frame = DummyVideoFrame()
             self.send_frame(source_frame)
-            frame = stream.next_frame()
+            frame = next(stream)
             self.assertEqual(frame, source_frame)
-        self.assertGreater(time.time() - t0, .3)
+        self.assertAlmostEqual(time.time(), t0 + 0.3, delta=0.05)
 
     def test_next_frame_timeout(self):
         stream = self.make_one()
         self.send_frame()
-        frame = stream.next_frame()
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        frame1 = next(stream)
+        self.assertIsNot(frame1, None)
+        frame2 = next(stream)
+        self.assertIs(frame2, None)
 
-    def test_next_frame_returns_none_if_closed(self):
+    def test_stop_iteration_if_closed(self):
         stream = self.make_one()
         stream.close()
-        frame = stream.next_frame()
-        self.assertIs(frame, None)
+        with self.assertRaises(StopIteration):
+            next(stream)
 
 class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
     default_path = 'stream'
@@ -116,22 +149,19 @@ class TestWebcamVideoStream(unittest.TestCase, WebcamStreamTests):
     def test_bad_boundary(self):
         stream = self.make_one('bad_boundary')
         self.send_frame()
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        self.assertIs(next(stream), None)
 
     def test_non_image_in_stream(self):
         stream = self.make_one()
         self.send_frame(DummyVideoFrame(content_type='text/plain'))
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        self.assertIs(next(stream), None)
 
     def test_non_uniform_image_type_in_stream(self):
         stream = self.make_one()
         self.send_frame(DummyVideoFrame(content_type='image/jpeg'))
-        stream.next_frame()
+        self.assertIsNot(next(stream), None)
         self.send_frame(DummyVideoFrame(content_type='image/png'))
-        with self.assertRaises(StreamTimeout):
-            stream.next_frame()
+        self.assertIs(next(stream), None)
 
 class TestWebcamStillStream(unittest.TestCase, WebcamStreamTests):
     default_path = 'snapshot'

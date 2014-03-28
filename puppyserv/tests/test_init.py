@@ -1,23 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 from datetime import datetime, timedelta
 from itertools import count
 import tempfile
-import time
 import unittest
-
-from six import text_type
 
 from gevent import sleep
 from mock import call, patch, Mock
 from webob import Request, Response
 from webob.dec import wsgify
 
-from puppyserv.interfaces import StreamTimeout, VideoBuffer, VideoFrame
-from puppyserv.testing import StopableWSGIServer
+from puppyserv.interfaces import VideoBuffer, VideoFrame
 
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
@@ -116,6 +112,16 @@ class TestVideoStreamApp(unittest.TestCase):
         self.assertEqual(resp.content_type, 'multipart/x-mixed-replace')
         self.assertRegexpMatches(resp.body, r'^--\S+--\r\n\Z')
 
+    def test_stream_timeout(self):
+        req = Request.blank('/', accept='*/*')
+        app = self.make_one(buffer_factory=DummyVideoBuffer(['frame1', None]))
+        app.timeout_frame = VideoFrame(content_type="image/jpeg",
+                                       image_data=b'timed out')
+        resp = app(req)
+        self.assertEqual(resp.content_type, 'multipart/x-mixed-replace')
+        self.assertRegexpMatches(next(resp.app_iter), r'\r\nframe1\r\n\Z')
+        self.assertRegexpMatches(next(resp.app_iter), r'\r\ntimed out\r\n\Z')
+
     def test_snapshot(self):
         req = Request.blank('/snapshot', accept='*/*')
         app = self.make_one(buffer_factory=DummyVideoBuffer)
@@ -131,12 +137,10 @@ class TestVideoStreamApp(unittest.TestCase):
         self.assertRegexpMatches(req.get_response(resp).body, r'Not connected')
 
     def test_snapshot_timeout(self):
-        from puppyserv.stream import TimeoutStreamBuffer
-        def buffer_factory():
-            buf = DummyVideoBuffer(frame_delay=60)
-            return TimeoutStreamBuffer(buf)
         req = Request.blank('/snapshot', accept='*/*')
-        app = self.make_one(buffer_factory)
+        app = self.make_one(buffer_factory=DummyVideoBuffer([None]))
+        app.timeout_frame = VideoFrame(content_type="image/jpeg",
+                                       image_data=b'timed out')
         resp = app(req)
         self.assertEqual(resp.status_code, 504)
         self.assertRegexpMatches(req.get_response(resp).body, r'timed out')
@@ -240,7 +244,7 @@ class TestBufferManager(unittest.TestCase):
         self.assertEqual(buffer_factory.mock_calls, [call(), call().close()])
 
 
-class DummyVideoBuffer(object):
+class DummyVideoBuffer(VideoBuffer):
     def __init__(self, image_data_iter=None, frame_delay=0):
         if image_data_iter is None:
             image_data_iter = ("frame %d" % n for n in count(1))
@@ -250,9 +254,10 @@ class DummyVideoBuffer(object):
     def __call__(self):
         return self                     # hokey - serve as own factory
 
-    def get_frame(self, current_frame=None, timeout=None):
-        if timeout is not None and timeout < self.frame_delay:
-            raise StreamTimeout()
-        image_data = next(self.image_data_iter, None)
-        if image_data:
-            return VideoFrame(content_type='image/jpeg', image_data=image_data)
+    def stream(self):
+        for image_data in self.image_data_iter:
+            if image_data is None:
+                yield None              # timeout
+            else:
+                yield VideoFrame(content_type='image/jpeg',
+                                 image_data=image_data)

@@ -1,18 +1,42 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
-from itertools import repeat
-from math import ceil
 import time
 
 import gevent
 
-class BucketRateLimiter(object):
+truthy = frozenset(('t', 'true', 'y', 'yes', 'on', '1'))
+
+def asbool(s):
+    """ Return the boolean value ``True`` if the case-lowered value of string
+    input ``s`` is any of ``t``, ``true``, ``y``, ``on``, or ``1``, otherwise
+    return the boolean value ``False``.  If ``s`` is the value ``None``,
+    return ``False``.  If ``s`` is already one of the boolean values ``True``
+    or ``False``, return it.
+
+    """
+    if s is None:
+        return False
+    if isinstance(s, bool):
+        return s
+    s = str(s).strip()
+    return s.lower() in truthy
+
+class RateLimiterBase(object):
     time = staticmethod(time.time)
     sleep = staticmethod(gevent.sleep)
 
+    def __iter__(self):
+        return self
+
+    def __call__(self, iterable):
+        while True:
+            next(self)
+            yield next(iterable)
+
+class BucketRateLimiter(RateLimiterBase):
     def __init__(self, max_rate, bucket_size=None):
         if bucket_size is None:
             # by default allow pre-buffering one second
@@ -59,10 +83,7 @@ class BucketRateLimiter(object):
             self._last_t += wait
             self._tokens = 0
 
-class BackoffRateLimiter(object):
-    time = staticmethod(time.time)
-    sleep = staticmethod(gevent.sleep)
-
+class BackoffRateLimiter(RateLimiterBase):
     def __init__(self, initial_delay, backoff=2, max_delay=300):
         self.initial_delay = initial_delay
         self.backoff = backoff

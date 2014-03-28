@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 import logging
 from mimetools import Message
@@ -10,7 +10,7 @@ import urlparse
 from six import text_type
 from six.moves.http_client import HTTPConnection
 
-from puppyserv.interfaces import StreamTimeout, VideoFrame, VideoStream
+from puppyserv.interfaces import VideoFrame, VideoStream
 from puppyserv.stream import FailsafeStreamBuffer, ThreadedStreamBuffer
 from puppyserv.util import (
     BucketRateLimiter,
@@ -32,13 +32,13 @@ class StreamingError(Error):
 class NotConfiguredError(Error, ValueError):
     pass
 
-def stream_buffer_from_settings(settings, **kwargs):
+def stream_buffer_from_settings(settings, frame_timeout=5.0, **kwargs):
     try:
         video_stream = WebcamVideoStream.from_settings(settings, **kwargs)
     except NotConfiguredError:
         video_buffer = None
     else:
-        video_buffer = ThreadedStreamBuffer(video_stream)
+        video_buffer = ThreadedStreamBuffer(video_stream, timeout=frame_timeout)
 
     try:
         still_config = config_from_settings(settings, subprefix='still.',
@@ -48,8 +48,7 @@ def stream_buffer_from_settings(settings, **kwargs):
     else:
         def still_buffer_factory():
             still_stream = WebcamStillStream(**still_config)
-            return ThreadedStreamBuffer(still_stream)
-
+            return ThreadedStreamBuffer(still_stream, timeout=frame_timeout)
 
     if video_buffer and still_buffer_factory:
         return FailsafeStreamBuffer(video_buffer, still_buffer_factory)
@@ -99,9 +98,10 @@ class WebcamStreamBase(VideoStream):
     def closed(self):
         return not self.conn
 
-    def next_frame(self):
+    def next(self):
+        # FIXME: check closed more often?
         if self.closed:
-            return None
+            raise StopIteration()
         next(self.rate_limiter)
         try:
             if self.stream is None:
@@ -114,7 +114,7 @@ class WebcamStreamBase(VideoStream):
             self.stream = None
             log.warn("Streaming failed: %s", text_type(ex) or repr(ex))
             self.conn.close()
-            raise StreamTimeout(unicode(ex))
+            return None
 
 class WebcamVideoStream(WebcamStreamBase):
     settings_subprefix = 'stream.'

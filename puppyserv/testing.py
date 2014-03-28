@@ -11,7 +11,7 @@ That doesn't work for us, since we're trying to simulate the
 mutipart/x-mixed-replace MJPEG video.
 
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 import errno
 from httplib import HTTPConnection, HTTPException
