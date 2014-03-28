@@ -142,7 +142,7 @@ class VideoStreamApp(object):
 
         stream_name = "> %s" % request.client_addr
         with self.buffer_manager as stream_buffer:
-            limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=4)
+            limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=10)
             stream = limiter(stream_buffer.stream())
             with self.stream_stat_manager(stream, stream_name) as frames:
                 for frame in frames:
