@@ -10,8 +10,10 @@
   :LOGBOOK:
   - State "DONE"       from "TODO"       [2014-03-24 Mon 23:13]
   :END:
-* STARTED Throttling
+* DONE Throttling
+  CLOSED: [2014-03-28 Fri 15:29]
   :LOGBOOK:
+  - State "DONE"       from "STARTED"    [2014-03-28 Fri 15:29]
   - State "STARTED"    from "DONE"       [2014-03-25 Tue 07:22]
   - State "DONE"       from "TODO"       [2014-03-24 Mon 10:47]
   :END:
@@ -47,3 +49,14 @@
   - State "DONE"       from "TODO"       [2014-03-26 Wed 08:49]
   :END:
   Maybe don't start still stream until video stream misses one whole timeout
+* DONE Make sure can only have one thread downloading stills
+  CLOSED: [2014-03-28 Fri 10:50]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-28 Fri 10:50]
+  :END:
+
+* DONE Adjust the video buffer sizes to match the rate limiter bucket sizes
+  CLOSED: [2014-03-28 Fri 15:29]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-28 Fri 15:29]
+  :END:
