@@ -20,6 +20,7 @@ from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 from puppyserv import webcam
 from puppyserv.stats import StreamStatManager
 from puppyserv.stream import StaticVideoStreamBuffer, TimeoutStreamBuffer
+from puppyserv.util import BucketRateLimiter
 
 log = logging.getLogger(__name__)
 
@@ -129,24 +130,21 @@ class VideoStreamApp(object):
 
 
     def _app_iter(self, request):
-        buffer_manager = self.buffer_manager
-        frame_timeout = self.frame_timeout
-        max_total_framerate = self.max_total_framerate
+        frame = None
+
+        def max_rate():
+            return self.max_total_framerate / self.buffer_manager.n_clients
+
         with self.stats(request.client_addr) as stats:
-            with buffer_manager as stream_buffer:
-                t0 = time.time()
-                frame = stream_buffer.get_frame(timeout=frame_timeout)
-                while frame:
+            with self.buffer_manager as stream_buffer:
+                limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=4)
+                for _ in limiter:
+                    frame = stream_buffer.get_frame(frame, self.frame_timeout)
+                    if frame is None:
+                        break
+                    limiter.max_rate = max_rate()
                     stats.got_frame()
                     yield self._part_for_frame(frame)
-
-                    n_clients = buffer_manager.n_clients
-                    wait_until = t0 + n_clients / max_total_framerate
-                    now = time.time()
-                    if wait_until > now:
-                        gevent.sleep(wait_until - now)
-                    t0 = max(wait_until, now)
-                    frame = stream_buffer.get_frame(frame, frame_timeout)
 
             yield b'--' + self.boundary + b'--' + EOL
 

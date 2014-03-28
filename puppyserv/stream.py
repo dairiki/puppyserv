@@ -40,8 +40,6 @@ class StaticVideoStreamBuffer(VideoBuffer):
     """ A video stream from static images.  For testing.
     """
     def __init__(self, image_filenames, loop=True, frame_rate=4.0):
-        if not image_filenames:
-            raise ValueError("No images given")
         self.frames = map(VideoFrame.from_file, image_filenames)
         self.loop = loop
         self.start = time.time()
@@ -75,7 +73,7 @@ class StaticVideoStreamBuffer(VideoBuffer):
         if self.closed:
             return None
         if self.loop:
-            index = index % len(self.frames)
+            index = index % max(len(self.frames), 1)
         elif index >= len(self.frames):
             return None                 # stream done
         return self.frames[index]
