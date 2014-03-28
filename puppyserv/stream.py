@@ -4,6 +4,7 @@
 from __future__ import absolute_import, division
 
 from collections import deque
+from contextlib import contextmanager
 from functools import wraps
 import glob
 import logging
@@ -17,6 +18,7 @@ import gevent.monkey
 Thread, Lock = gevent.monkey.get_original('threading', ['Thread', 'Lock'])
 
 from puppyserv.interfaces import VideoBuffer, VideoFrame
+from puppyserv.stats import dummy_stream_stat_manager
 from puppyserv.util import asbool
 
 log = logging.getLogger(__name__)
@@ -77,15 +79,18 @@ def synchronized(method):
             return method(self, *args)
     return wrapper
 
-
 class ThreadedStreamBuffer(VideoBuffer):
     """ Stream video in a separate thread.
 
     """
-    def __init__(self, source, timeout=None, buffer_size=4):
+    def __init__(self, source, timeout=None, buffer_size=4,
+                 stream_stat_manager=dummy_stream_stat_manager,
+                 stream_name=None):
         self.source = source
         self.timeout = timeout
         self.framebuf = deque(maxlen=buffer_size)
+        self.stream_stat_manager = stream_stat_manager
+        self.stream_name = stream_name or repr(source)
         self.length = 0
         self.mutex = Lock()
         self.new_frame_event = gevent.event.Event()
@@ -114,12 +119,12 @@ class ThreadedStreamBuffer(VideoBuffer):
 
     def run(self):
         log.debug("Capture thread starting: %r", self.source)
-        frames = iter(self.source)
-        try:
-            while not self.closed:
-                self._put_frame(next(frames))
-        except StopIteration:
-            self.closed = True
+        with self.stream_stat_manager(self.source, self.stream_name) as frames:
+            try:
+                while not self.closed:
+                    self._put_frame(next(frames))
+            except StopIteration:
+                self.closed = True
         log.debug("Capture thread terminating: %r", self.source)
         self.source.close()
 

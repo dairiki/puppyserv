@@ -17,7 +17,7 @@ from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
 from puppyserv import webcam
 from puppyserv.interfaces import VideoFrame
-from puppyserv.stats import StreamStatManager
+from puppyserv.stats import dummy_stream_stat_manager, StreamStatManager
 from puppyserv.stream import StaticVideoStreamBuffer
 from puppyserv.util import BucketRateLimiter
 
@@ -69,13 +69,19 @@ def main(global_config, **settings):
 
     frame_timeout = config.pop('frame_timeout')
 
+    stream_stat_manager = StreamStatManager()
+    config['stream_stat_manager'] = stream_stat_manager
+
     if 'static.images' in settings:
         def stream_buffer_factory():
             return StaticVideoStreamBuffer.from_settings(settings)
     else:
         def stream_buffer_factory():
             return webcam.stream_buffer_from_settings(
-                settings, frame_timeout=frame_timeout, user_agent=SERVER_NAME)
+                settings,
+                frame_timeout=frame_timeout,
+                stream_stat_manager=stream_stat_manager,
+                user_agent=SERVER_NAME)
 
     log.info("App starting!")
     return VideoStreamApp(stream_buffer_factory, **config)
@@ -87,15 +93,15 @@ class VideoStreamApp(object):
     def __init__(self, stream_buffer_factory,
                  max_total_framerate=10,
                  timeout_image=None,
+                 stream_stat_manager=dummy_stream_stat_manager,
                  **kwargs):
         if timeout_image is None:
             timeout_image = resource_filename('puppyserv', 'timeout.jpg')
         assert max_total_framerate > 0
         self.max_total_framerate = max_total_framerate
         self.buffer_manager = BufferManager(stream_buffer_factory, **kwargs)
-        self.stats = StreamStatManager()
         self.timeout_frame = VideoFrame.from_file(timeout_image)
-
+        self.stream_stat_manager = stream_stat_manager
     @wsgify
     def __call__(self, request):
         if request.path_info == '/':
@@ -134,14 +140,15 @@ class VideoStreamApp(object):
         def max_rate():
             return self.max_total_framerate / self.buffer_manager.n_clients
 
-        with self.stats(request.client_addr) as stats:
-            with self.buffer_manager as stream_buffer:
-                limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=4)
-                for frame in limiter(stream_buffer.stream()):
+        stream_name = "> %s" % request.client_addr
+        with self.buffer_manager as stream_buffer:
+            limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=4)
+            stream = limiter(stream_buffer.stream())
+            with self.stream_stat_manager(stream, stream_name) as frames:
+                for frame in frames:
                     if frame is None:
                         frame = self.timeout_frame
                     limiter.max_rate = max_rate()
-                    stats.got_frame()
                     yield self._part_for_frame(frame)
 
             yield b'--' + self.boundary + b'--' + EOL

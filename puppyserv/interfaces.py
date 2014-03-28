@@ -9,7 +9,7 @@ class VideoFrame(object):
     These currently are always JPEG images.
 
     """
-    def __init__(self, image_data, content_type):
+    def __init__(self, image_data, content_type='image/jpeg'):
         self.image_data = image_data
         self.content_type = content_type
 

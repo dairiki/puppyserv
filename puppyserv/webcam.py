@@ -11,6 +11,7 @@ from six import text_type
 from six.moves.http_client import HTTPConnection
 
 from puppyserv.interfaces import VideoFrame, VideoStream
+from puppyserv.stats import dummy_stream_stat_manager
 from puppyserv.stream import FailsafeStreamBuffer, ThreadedStreamBuffer
 from puppyserv.util import (
     BucketRateLimiter,
@@ -32,13 +33,19 @@ class StreamingError(Error):
 class NotConfiguredError(Error, ValueError):
     pass
 
-def stream_buffer_from_settings(settings, frame_timeout=5.0, **kwargs):
+def stream_buffer_from_settings(settings, frame_timeout=5.0,
+                                stream_stat_manager=dummy_stream_stat_manager,
+                                **kwargs):
     try:
         video_stream = WebcamVideoStream.from_settings(settings, **kwargs)
     except NotConfiguredError:
         video_buffer = None
     else:
-        video_buffer = ThreadedStreamBuffer(video_stream, timeout=frame_timeout)
+        video_buffer = ThreadedStreamBuffer(
+            video_stream,
+            timeout=frame_timeout,
+            stream_name='< video stream',
+            stream_stat_manager=stream_stat_manager)
 
     try:
         still_config = config_from_settings(settings, subprefix='still.',
@@ -48,7 +55,11 @@ def stream_buffer_from_settings(settings, frame_timeout=5.0, **kwargs):
     else:
         def still_buffer_factory():
             still_stream = WebcamStillStream(**still_config)
-            return ThreadedStreamBuffer(still_stream, timeout=frame_timeout)
+            return ThreadedStreamBuffer(
+                still_stream,
+                timeout=frame_timeout,
+                stream_name='< still stream',
+                stream_stat_manager=stream_stat_manager)
 
     if video_buffer and still_buffer_factory:
         return FailsafeStreamBuffer(video_buffer, still_buffer_factory)
