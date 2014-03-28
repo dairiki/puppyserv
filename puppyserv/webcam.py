@@ -12,7 +12,11 @@ from six.moves.http_client import HTTPConnection
 
 from puppyserv.interfaces import StreamTimeout, VideoFrame, VideoStream
 from puppyserv.stream import FailsafeStreamBuffer, ThreadedStreamBuffer
-from puppyserv.util import RateLimiter, ReadlineAdapter
+from puppyserv.util import (
+    BucketRateLimiter,
+    BackoffRateLimiter,
+    ReadlineAdapter,
+    )
 
 DEFAULT_USER_AGENT = 'puppyserv (<dairiki@dairiki.org>)'
 
@@ -64,6 +68,7 @@ class WebcamStreamBase(VideoStream):
 
     def __init__(self, url,
                  max_rate=3.0,
+                 rate_bucket_size=None,
                  socket_timeout=10,
                  user_agent=DEFAULT_USER_AGENT):
         netloc, self.url = _parse_url(url)
@@ -72,8 +77,8 @@ class WebcamStreamBase(VideoStream):
         self.request_headers['User-Agent'] = user_agent
 
         self.stream = None
-        self.rate_limiter = RateLimiter(max_rate)
-        self.open_rate_limiter = RateLimiter(1.0 / socket_timeout, backoff=1.5)
+        self.rate_limiter = BucketRateLimiter(max_rate, rate_bucket_size)
+        self.open_rate_limiter = BackoffRateLimiter(socket_timeout)
 
     @classmethod
     def from_settings(cls, settings, prefix='webcam.', **defaults):
@@ -97,10 +102,10 @@ class WebcamStreamBase(VideoStream):
     def next_frame(self):
         if self.closed:
             return None
-        self.rate_limiter()
+        next(self.rate_limiter)
         try:
             if self.stream is None:
-                self.open_rate_limiter()
+                next(self.open_rate_limiter)
                 self.stream = self._open_stream()
             frame = next(self.stream, None)
             self.open_rate_limiter.reset()

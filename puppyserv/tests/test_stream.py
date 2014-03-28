@@ -106,11 +106,11 @@ class DummyFrame(object):
 
 class DummyVideoStream(object):
     def __init__(self, frames=(), max_rate=100):
-        from puppyserv.util import RateLimiter
+        from puppyserv.util import BucketRateLimiter
         self.frames = iter(frames)
         self.closed = False
-        self.rate_limiter = RateLimiter(max_rate)
-        self.rate_limiter()
+        self.rate_limiter = BucketRateLimiter(max_rate, 1)
+        next(self.rate_limiter)
 
     def close(self):
         self.closed = True
@@ -118,5 +118,5 @@ class DummyVideoStream(object):
     def next_frame(self):
         if self.closed:
             return None
-        self.rate_limiter()
+        next(self.rate_limiter)
         return next(self.frames, None)

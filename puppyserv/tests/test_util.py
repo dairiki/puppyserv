@@ -5,10 +5,137 @@ from __future__ import absolute_import
 
 import unittest
 
-from six import BytesIO
+from six import BytesIO, moves
 
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
+
+class RateLimiterTestBase(unittest.TestCase):
+    def setUp(self):
+        self.t = 0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, wait):
+        self.t += max(0, wait)
+
+    def make_one(self, *args, **kwargs):
+        limiter = self.limiter_class(*args, **kwargs)
+        limiter.time = self.time
+        limiter.sleep = self.sleep
+        return limiter
+
+class TestBucketRateLimiter(RateLimiterTestBase):
+    @property
+    def limiter_class(self):
+        from puppyserv.util import BucketRateLimiter
+        return BucketRateLimiter
+
+    def test_default_bucket_size(self):
+        limiter = self.make_one(10)
+        self.assertEqual(limiter.max_rate, 10)
+        self.assertEqual(limiter.bucket_size, 10)
+
+    def test_bucket_size_one(self):
+        limiter = self.make_one(2.0, 1)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        next(limiter)
+        self.assertEqual(self.t, 0.5)
+        self.sleep(0.25)
+        next(limiter)
+        self.assertEqual(self.t, 1.0)
+        self.sleep(0.75)
+        next(limiter)
+        self.assertEqual(self.t, 1.75)
+
+    def test_bucket_size_two(self):
+        limiter = self.make_one(0.25, 2)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        next(limiter)
+        self.assertEqual(self.t, 4.0)
+        self.sleep(3.5)
+        next(limiter)
+        self.assertEqual(self.t, 8.0)
+        self.sleep(8.0)
+        next(limiter)
+        next(limiter)
+        self.assertEqual(self.t, 16.0)
+
+    def test_reset(self):
+        limiter = self.make_one(2.0, 1)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        limiter.reset()
+        next(limiter)
+        self.assertEqual(self.t, 0)
+
+    def test_set_max_rate(self):
+        limiter = self.make_one(2.0, 1)
+        next(limiter)
+        self.assertEqual(limiter.tokens, 0)
+        self.sleep(0.25)                # get 0.5 tokens
+        limiter.max_rate = 1.0
+        self.sleep(0.25)                # get 0.25 tokens
+        self.assertEqual(limiter.tokens, 0.75)
+        next(limiter)
+        self.assertEqual(self.t, 0.75)
+
+    def test_iter(self):
+        limiter = self.make_one(1.0, 1)
+        for n, _ in moves.zip(range(10), limiter):
+            self.assertEqual(self.t, n)
+
+class TestBackofRateLimiter(RateLimiterTestBase):
+    @property
+    def limiter_class(self):
+        from puppyserv.util import BackoffRateLimiter
+        return BackoffRateLimiter
+
+    def test_delays(self):
+        limiter = self.make_one(initial_delay=1.5, backoff=2, max_delay=10)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        next(limiter)
+        self.assertEqual(self.t, 1.5)
+        next(limiter)
+        self.assertEqual(self.t, 4.5)   # delay = 3.0
+        next(limiter)
+        self.assertEqual(self.t, 10.5)  # delay = 6.0
+        next(limiter)
+        self.assertEqual(self.t, 20.5)  # delay = 10.0
+        next(limiter)
+        self.assertEqual(self.t, 30.5)  # delay = 10.0
+
+    def test_credit_for_time_served(self):
+        limiter = self.make_one(initial_delay=1, backoff=2, max_delay=10)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        self.sleep(0.75)
+        next(limiter)
+        self.assertEqual(self.t, 1.0)
+        self.sleep(3.0)
+        next(limiter)
+        self.assertEqual(self.t, 4.0)
+        next(limiter)
+        self.assertEqual(self.t, 8.0)
+
+    def test_reset(self):
+        limiter = self.make_one(initial_delay=1, backoff=2, max_delay=10)
+        next(limiter)
+        self.assertEqual(self.t, 0)
+        next(limiter)
+        self.assertEqual(self.t, 1)
+        limiter.reset()
+        next(limiter)
+        self.assertEqual(self.t, 1)
+        next(limiter)
+        self.assertEqual(self.t, 2)
+
 
 class TestReadlineAdapter(unittest.TestCase):
     def make_one(self, fp):
@@ -86,3 +213,13 @@ class TestReadlineAdapter(unittest.TestCase):
         self.assertEqual(fp.readline(6), b'abc\n')
         self.assertEqual(fp.read(123), data[4:])
         self.assertEqual(fp.read(123), b'')
+
+class MockTime(object):
+    def __init__(self):
+        self.t = 0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, delay):
+        self.t += max(0, delay)

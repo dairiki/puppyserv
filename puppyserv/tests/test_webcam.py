@@ -35,6 +35,7 @@ class WebcamStreamTests(object):
             path = self.default_path
 
         kwargs.setdefault('max_rate', 1000)
+        kwargs.setdefault('rate_bucket_size', 1)
         kwargs.setdefault('socket_timeout', 0.1)
 
         url = test_server.application_url + path
