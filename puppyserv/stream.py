@@ -219,7 +219,7 @@ class FailsafeStreamBuffer(VideoBuffer):
 
         while timeout is None or timeout > check_timeout:
             try:
-                return self._get_frame(current_frame, timeout=check_timeout)
+                return self._get_frame(current_frame, check_timeout)
             except StreamTimeout:
                 if timeout is not None:
                     timeout -= check_timeout
@@ -239,10 +239,10 @@ class FailsafeStreamBuffer(VideoBuffer):
             # We're current streaming from the backup buffer
             try:
                 # Check to see if primary buffer is back up
-                frame = primary.get_frame(primary_frame, timeout=0)
+                frame = primary.get_frame(primary_frame, 0)
             except StreamTimeout:
                 # It's not...
-                frame = backup.get_frame(current_frame, timeout=timeout)
+                frame = backup.get_frame(current_frame, timeout)
                 frame.primary_frame = primary_frame
                 return frame
             else:
@@ -253,7 +253,7 @@ class FailsafeStreamBuffer(VideoBuffer):
                 return frame
         else:
             try:
-                return primary.get_frame(primary_frame, timeout=timeout)
+                return primary.get_frame(primary_frame, timeout)
             except StreamTimeout:
                 log.info("Switching to backup stream")
                 self.backup_buffer = self.backup_buffer_factory()

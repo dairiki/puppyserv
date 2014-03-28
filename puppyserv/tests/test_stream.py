@@ -8,7 +8,8 @@ import tempfile
 import time
 import unittest
 
-from mock import call, sentinel, Mock
+import gevent
+from mock import call, patch, sentinel, Mock
 
 from puppyserv.interfaces import StreamTimeout
 
@@ -65,6 +66,82 @@ class TestThreadedStreamBuffer(unittest.TestCase):
 
         with self.assertRaises(StreamTimeout):
             stream_buffer.get_frame(frame, timeout=0.1)
+
+class TestFailsafeStreamBuffer(unittest.TestCase):
+    def make_one(self, primary_buffer, backup_buffer_factory):
+        from puppyserv.stream import FailsafeStreamBuffer
+        buffer = FailsafeStreamBuffer(primary_buffer, backup_buffer_factory)
+        self.addCleanup(buffer.close)
+        return buffer
+
+    def test_returns_none_if_closed(self):
+        primary_buffer = Mock(name='primary_buffer')
+        backup_buffer_factory = Mock(name='backup_buffer_factory', spec=())
+        failsafe = self.make_one(primary_buffer, backup_buffer_factory)
+        failsafe.close()
+        frame = failsafe.get_frame(None, 1)
+        self.assertIs(frame, None)
+
+    def test_long_timeout(self):
+        failsafe = self.make_one(Mock(), Mock())
+
+        with patch.object(failsafe, '_get_frame') as get_frame:
+            frame = failsafe.get_frame(None, 200)
+        self.assertIs(frame, get_frame.return_value)
+        self.assertEqual(get_frame.mock_calls, [call(None, 10)])
+
+        with patch.object(failsafe, '_get_frame') as get_frame:
+            get_frame.side_effect = StreamTimeout
+            with self.assertRaises(StreamTimeout):
+                failsafe.get_frame(None, 15)
+        self.assertEqual(get_frame.mock_calls, [
+            call(None, 10),
+            call(None, 5),
+            ])
+
+    def test_failover_and_recovery(self):
+        primary_buffer = Mock(name='primary_buffer')
+        backup_buffer_factory = Mock(name='backup_buffer_factory', spec=())
+        backup_buffer = backup_buffer_factory.return_value
+        failsafe = self.make_one(primary_buffer, backup_buffer_factory)
+
+        frame1 = failsafe.get_frame(None, 1)
+        self.assertIs(frame1, primary_buffer.get_frame.return_value)
+
+        primary_buffer.get_frame.side_effect = StreamTimeout
+        with self.assertRaises(StreamTimeout):
+            failsafe.get_frame(frame1, 1)
+        self.assertEqual(backup_buffer_factory.mock_calls, [call()])
+
+        frame2 = failsafe.get_frame(frame1, 1)
+        self.assertIs(frame2, backup_buffer.get_frame.return_value)
+
+        primary_buffer.get_frame.side_effect = None
+        frame3 = failsafe.get_frame(frame1, 1)
+        self.assertIs(frame3, primary_buffer.get_frame.return_value)
+        self.assertEqual(backup_buffer_factory.mock_calls, [
+            call(),
+            call().get_frame(frame1, 1),
+            call().close(),
+            ])
+
+    def test_concurrent_primary_timeouts(self):
+        # Check that if two clients both hit primary timeouts simultaneously
+        # only one manages to create a backup buffer
+        def primary_get_frame(current_frame, timeout):
+            gevent.sleep(timeout)
+            raise StreamTimeout()
+        primary_buffer = Mock(get_frame=primary_get_frame)
+        backup_buffer_factory = Mock(spec=())
+
+        failsafe = self.make_one(primary_buffer, backup_buffer_factory)
+        def client():
+            with self.assertRaises(StreamTimeout):
+                failsafe.get_frame(None, 0.1)
+        client2 = gevent.spawn(client)
+        client()
+        client2.join()
+        self.assertEqual(backup_buffer_factory.mock_calls, [call()])
 
 class TestTimeoutStreamBuffer(unittest.TestCase):
     def make_one(self, stream_buffer):
