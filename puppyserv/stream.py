@@ -4,7 +4,6 @@
 from __future__ import absolute_import, division
 
 from collections import deque
-from contextlib import contextmanager
 from functools import wraps
 import glob
 import logging
@@ -83,7 +82,7 @@ class ThreadedStreamBuffer(VideoBuffer):
     """ Stream video in a separate thread.
 
     """
-    def __init__(self, source, timeout=None, buffer_size=4,
+    def __init__(self, source, timeout=None, buffer_size=10,
                  stream_stat_manager=dummy_stream_stat_manager,
                  stream_name=None):
         self.source = source
