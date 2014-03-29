@@ -21,6 +21,8 @@ requires = [
 tests_require = [
     'mock',
     'paste',
+    'pytest',
+    'pytest-cov',
     ]
 
 if sys.version_info[:2] < (2,7):
@@ -29,7 +31,7 @@ if sys.version_info[:2] < (2,7):
 class PyTest(TestCommand):
     def finalize_options(self):
         TestCommand.finalize_options(self)
-        self.test_args = []
+        self.test_args = ['puppyserv/tests']
         self.test_suite = True
 
     def run_tests(self):
