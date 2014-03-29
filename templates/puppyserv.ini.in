@@ -81,7 +81,7 @@ chown-socket = ${uwsgi-uid}:www-data
 keys      = root, puppyserv
 
 [handlers]
-keys      = console
+keys      = console, file
 
 [formatters]
 keys      = generic
