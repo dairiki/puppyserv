@@ -92,6 +92,20 @@ class Test_main(unittest.TestCase):
         (buffer_factory,), config = VideoStreamApp.call_args
         self.assertIsInstance(buffer_factory(), VideoBuffer)
 
+    def test_empty_static_images_is_the_same_as_unset(self, VideoStreamApp):
+        from puppyserv.webcam import WebcamVideoStream
+        global_config = self.make_global_config()
+        settings = {
+            'static.images': '',
+            'webcam.stream.url': 'http://example.com/stream',
+            'webcam.still.url': '',
+            }
+        app = self.call_it(global_config, **settings)
+        self.assertIs(app, VideoStreamApp.return_value)
+        (buffer_factory,), config = VideoStreamApp.call_args
+        self.assertIsInstance(buffer_factory(), VideoBuffer)
+        self.assertIsInstance(buffer_factory().source, WebcamVideoStream)
+
 class TestVideoStreamApp(unittest.TestCase):
     def make_one(self, buffer_factory, **kwargs):
         from puppyserv import VideoStreamApp

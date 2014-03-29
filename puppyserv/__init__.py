@@ -72,7 +72,7 @@ def main(global_config, **settings):
     stream_stat_manager = StreamStatManager()
     config['stream_stat_manager'] = stream_stat_manager
 
-    if 'static.images' in settings:
+    if settings.get('static.images'):
         def stream_buffer_factory():
             return StaticVideoStreamBuffer.from_settings(settings)
     else:
