@@ -105,24 +105,25 @@ class ThreadedStreamBuffer(VideoBuffer):
         return self.runner.is_alive()
 
     def run(self):
+        condition = self.condition
+        framebuf = self.framebuf
         log.debug("Capture thread starting: %r", self.source)
         with self.stream_stat_manager(self.source, self.stream_name) as frames:
             try:
                 while not self.closed:
-                    self._put_frame(next(frames))
+                    frame = next(frames)
+                    with condition:
+                        framebuf.append(frame)
+                        self.length += 1
+                        condition.notifyAll()
             except StopIteration:
                 self.closed = True
         log.debug("Capture thread terminating: %r", self.source)
         self.source.close()
 
-    def _put_frame(self, frame):
-        with self.condition:
-            self.framebuf.append(frame)
-            self.length += 1
-            self.condition.notifyAll()
-
     def stream(self):
         condition = self.condition
+        framebuf = self.framebuf
         pos = max(0, self.length - 1)
         while not self.closed:
             with condition:
@@ -131,11 +132,11 @@ class ThreadedStreamBuffer(VideoBuffer):
                     if self.closed:
                         break
                 if pos < self.length:
-                    bufstart = self.length - len(self.framebuf)
+                    bufstart = self.length - len(framebuf)
                     if bufstart > pos:
                         log.debug("Dropped %d frames", bufstart - pos)
                         pos = bufstart
-                    frame = self.framebuf[pos - self.length]
+                    frame = framebuf[pos - self.length]
                     pos += 1
                 else:
                     assert pos == self.length
