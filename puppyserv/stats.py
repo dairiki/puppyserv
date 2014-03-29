@@ -26,8 +26,8 @@ class StreamStatManager(object):
 
 
     STATS_FMT = (
-        u"{stream_name:15s}: {time_connected:6.1f}s,"
-        u" {frames_total:6d} f {frames_avg_rate:4.02f}/s"
+        u"{stream_name:17s}:{time_connected:6.1f}s,"
+        u"{frames_total:6d} f {frames_avg_rate:4.02f}/s"
         u" [{frames_cur_rate:4.02f}/s],"
         u" {bytes_total} {bytes_avg_rate}/s [{bytes_cur_rate}/s]")
 
