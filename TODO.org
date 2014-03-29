@@ -67,3 +67,19 @@
   :LOGBOOK:
   - State "DONE"       from "TODO"       [2014-03-28 Fri 15:29]
   :END:
+* DONE Assertion error
+  CLOSED: [2014-03-29 Sat 03:35]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-29 Sat 03:35]
+  :END:
+  2014-03-29 01:02:54,761 INFO  [puppyserv.stats][MainThread] > 207.14.34.38: stream terminated: 15727.3s, 35565 f 2.26/s;  691MB 45.0kB/s
+  Traceback (most recent call last):
+    File "/home/dairiki/puppyserv/puppyserv/__init__.py", line 148, in _app_iter
+      for frame in frames:
+    File "/home/dairiki/puppyserv/puppyserv/stats.py", line 93, in next
+      frame = next(self.stream)
+    File "/home/dairiki/puppyserv/puppyserv/util.py", line 37, in __call__
+      yield next(iterable)
+    File "/home/dairiki/puppyserv/puppyserv/stream.py", line 148, in stream
+      assert wait_for is None
+  AssertionError

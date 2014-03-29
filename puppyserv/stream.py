@@ -4,14 +4,13 @@
 from __future__ import absolute_import, division
 
 from collections import deque
-from functools import wraps
 import glob
 import logging
 import mimetypes
 import time
 
 import gevent
-import gevent.event
+import gevent.lock
 import gevent.monkey
 
 Thread, Lock = gevent.monkey.get_original('threading', ['Thread', 'Lock'])
@@ -71,13 +70,6 @@ class StaticVideoStreamBuffer(VideoBuffer):
                 break
             yield self.frames[frame]
 
-def synchronized(method):
-    @wraps(method)
-    def wrapper(self, *args):
-        with self.mutex:
-            return method(self, *args)
-    return wrapper
-
 class ThreadedStreamBuffer(VideoBuffer):
     """ Stream video in a separate thread.
 
@@ -87,20 +79,16 @@ class ThreadedStreamBuffer(VideoBuffer):
                  stream_name=None):
         self.source = source
         self.timeout = timeout
-        self.framebuf = deque(maxlen=buffer_size)
+
         self.stream_stat_manager = stream_stat_manager
         self.stream_name = stream_name or repr(source)
-        self.length = 0
-        self.mutex = Lock()
-        self.new_frame_event = gevent.event.Event()
 
-        # gevent magic:
-        # Hook to to set the new_frame event in the main thread
-        async = gevent.get_hub().loop.async()
-        async.start(self._signal_new_frame)
-        self.signal_new_frame = async.send
+        self.framebuf = deque(maxlen=buffer_size)
+        self.length = 0
+        self.condition = _GeventCondition()
 
         self.closed = False
+
         self.runner = Thread(target=self.run)
         self.runner.daemon = True
         self.runner.start()
@@ -127,45 +115,82 @@ class ThreadedStreamBuffer(VideoBuffer):
         log.debug("Capture thread terminating: %r", self.source)
         self.source.close()
 
-    @synchronized
     def _put_frame(self, frame):
-        self.framebuf.append(frame)
-        self.length += 1
-        self.signal_new_frame()
-
-    def _signal_new_frame(self):
-        new_frame_event = self.new_frame_event
-        self.new_frame_event = gevent.event.Event()
-        new_frame_event.set()
+        with self.condition:
+            self.framebuf.append(frame)
+            self.length += 1
+            self.condition.notifyAll()
 
     def stream(self):
+        condition = self.condition
         pos = max(0, self.length - 1)
         while not self.closed:
-            pos, frame, wait_for = self._get_frame(pos)
-            if wait_for is not None:
-                if wait_for.wait(self.timeout):
-                    pos, frame, wait_for = self._get_frame(pos)
-                    assert wait_for is None
+            with condition:
+                if pos == self.length:
+                    self.condition.wait(self.timeout)
+                    if self.closed:
+                        break
+                if pos < self.length:
+                    bufstart = self.length - len(self.framebuf)
+                    if bufstart > pos:
+                        log.debug("Dropped %d frames", bufstart - pos)
+                        pos = bufstart
+                    frame = self.framebuf[pos - self.length]
+                    pos += 1
                 else:
-                    frame = None        # timeout
-                if self.closed:
-                    break
+                    assert pos == self.length
+                    frame = None        # timed out
             yield frame
 
-    @synchronized
-    def _get_frame(self, pos):
-        framebuf = self.framebuf
-        length = self.length
-        start = length - len(framebuf)
-        if pos < start:
-            log.debug("Dropped %d frames", start - pos)
-            pos = start
+class _GeventCondition(object):
+    """ A gevent-aware version of threading.Condition
 
-        if pos == length:
-            return pos, None, self.new_frame_event
-        else:
-            assert pos < length
-            return pos + 1, framebuf[pos - length], None
+    The ``wait`` method may be called only from a single (the gevent)
+    thread.
+
+    The ``notifyAll`` may safely be called from any thread.
+
+    """
+    def __init__(self, lock=None):
+        if lock is None:
+            # RLock?
+            lock = Lock()               # a real threading.Lock
+        self.lock = lock
+        self.waiters = []
+
+        self.acquire = lock.acquire
+        self.release = lock.release
+
+        # How we communicate from other threads to the gevent thread
+        async = gevent.get_hub().loop.async()
+        async.start(self._notify_all)
+        self.async = async
+
+    def __enter__(self):
+        return self.lock.__enter__()
+
+    def __exit__(self, exc_type, exc_value, tb):
+        return self.lock.__exit__(exc_type, exc_value, tb)
+
+    def wait(self, timeout=None):
+        # FIXME: check that we own and have locked the lock?
+        waiter = gevent.lock.Semaphore(0)
+        self.waiters.append(waiter)
+        self.release()
+        try:
+            if not waiter.wait(timeout):
+                self.waiters.remove(waiter)
+        finally:
+            self.acquire()
+
+    def notifyAll(self):
+        # FIXME: check that we own and have locked the lock?
+        self.async.send()
+
+    def _notify_all(self):
+        for waiter in self.waiters:
+            waiter.release()
+        self.waiters = []
 
 class FailsafeStreamBuffer(VideoBuffer):
     """ A stream bufferwhich falls back to a backup stream buffer if

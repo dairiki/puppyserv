@@ -10,6 +10,7 @@ import unittest
 from pkg_resources import resource_filename
 from six.moves import queue
 import gevent
+import gevent.event
 from mock import patch
 
 from puppyserv.interfaces import VideoBuffer, VideoStream
