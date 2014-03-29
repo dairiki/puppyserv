@@ -43,10 +43,10 @@ document_root = ${buildout:directory}/htdocs
 # uwsgi server configuration
 ###
 [uwsgi]
-uid          = ${uwsgi:uid}
+uid          = ${uwsgi-uid}
 
 # Include the right config (from below) for either http or uwsgi mode
-ini          = :uwsgi-${uwsgi:mode}
+ini          = :uwsgi-${uwsgi-mode}
 
 # python library path configuration
 include      = ${uwsgi:output}
@@ -63,14 +63,14 @@ gevent       = 100
 
 [uwsgi-http]
 # Configuration for uwsgi running in standalone HTTP server mode
-http         = ${uwsgi:http}
+http         = ${uwsgi-http}
 
 [uwsgi-uwsgi]
 # Configuration for uwsgi running the UWSGI protocol
 protocol     = uwsgi
-socket       = ${buildout:directory}/run/uwsgi.sock
+socket       = ${uwsgi-socket}
 chmod-socket = 660
-chown-socket = ${uwsgi:uid}:www-data
+chown-socket = ${uwsgi-uid}:www-data
 
 ################################################################
 # logging configuration

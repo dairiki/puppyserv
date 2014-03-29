@@ -8,7 +8,7 @@ server {
     server_name ${server_name};
 
     location /stream/ {
-        uwsgi_pass unix:${buildout:directory}/run/uwsgi.sock;
+        uwsgi_pass unix:${puppyserv.ini:uwsgi-socket}
         include uwsgi_params;
         # This is not in the stock debian nginx configs, but it's needed
         uwsgi_param     SCRIPT_NAME             '';
