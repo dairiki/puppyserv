@@ -32,10 +32,15 @@
   - State "DONE"       from "TODO"       [2014-03-25 Tue 07:22]
   :END:
 
-* TODO Buildout
-  - [ ] Move supervisor config into buildout
-  - [ ] Move nginx config into buildout
-  - [ ] Set perms on log dir a uwsgi socket
+* DONE Buildout
+  CLOSED: [2014-03-28 Fri 18:13]
+  :LOGBOOK:
+  - State "DONE"       from "TODO"       [2014-03-28 Fri 18:13]
+  :END:
+  - [X] Move supervisor config into buildout
+  - [X] Move nginx config into buildout
+  - [X] Set perms on log dir and uwsgi socket
+    (just run as dairiki, use uwsgi allow group www-data to access socket)
 * TODO Check Accepts: header
   If doesn't accept multipart/x-m-r serve snapshot
   or failure

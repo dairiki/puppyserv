@@ -1,0 +1,19 @@
+[program:puppyserv]
+directory = ${buildout:directory}
+
+# start as root - have uwsgi switch users after chowning/chmoding socket
+umask   = 022
+
+command   = ${uwsgi:binary} --ini ${puppyserv.ini:output}
+startsecs = 5
+
+# uwsgi wants INT instead of TERM
+stopsignal = INT
+
+# uwsgi seems to send all output to stderr
+redirect_stderr = true
+
+# Create tmpfiles in /var/tmp
+# uwsgi has post-buffering set, which means large posts are buffered to disc
+# /tmp is on / for us (shouldn't be) - don't want to fill up /
+#environment = TMPDIR="/var/tmp"

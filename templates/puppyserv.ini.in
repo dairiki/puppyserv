@@ -1,0 +1,111 @@
+###
+# app configuration
+###
+[composite:main]
+use = egg:Paste#urlmap
+/ = static
+/stream/ = stream
+
+[app:stream]
+use = egg:puppyserv
+
+# Testing: Define this to stream from static images instead of
+# from webcam.
+static.images = ${static.images}
+
+# Socket timeout for connections to webcam
+# You can also set webcam.stream.socket_timeout and/or
+# webcam.still.socket_timeout for finer grained control.
+webcam.socket_timeout = 10.0
+webcam.stream.url = ${webcam.stream.url}
+webcam.stream.max_rate = 4.0
+webcam.still.url = ${webcam.still.url}
+webcam.still.max_rate = 1.0
+
+# How long to wait for a frame before displaying "timeout" frame
+frame_timeout = 5.0
+
+# Maximum number of frames per second to deliver to all clients
+# This rate is divided evenly among clients, so if there are enough
+# clients that this rate is reach, all clients will receive a reduced
+# framerate.
+max_total_framerate = 25
+
+# How long to wait after the last client disconnects before stopping
+# stream acquisition.
+stop_stream_holdoff = 15
+
+[app:static]
+use = egg:Paste#static
+document_root = ${buildout:directory}/htdocs
+
+################################################################
+# uwsgi server configuration
+###
+[uwsgi]
+uid          = ${uwsgi:uid}
+
+# Include the right config (from below) for either http or uwsgi mode
+ini          = :uwsgi-${uwsgi:mode}
+
+# python library path configuration
+include      = ${uwsgi:output}
+paste        = config:%p
+
+single-interpreter = true
+master       = true
+
+# number of greenlets to run
+gevent       = 100
+
+# Testing only
+#python-auto-reload = 2
+
+[uwsgi-http]
+# Configuration for uwsgi running in standalone HTTP server mode
+http         = ${uwsgi:http}
+
+[uwsgi-uwsgi]
+# Configuration for uwsgi running the UWSGI protocol
+protocol     = uwsgi
+socket       = ${buildout:directory}/run/uwsgi.sock
+chmod-socket = 660
+chown-socket = ${uwsgi:uid}:www-data
+
+################################################################
+# logging configuration
+# http://docs.pylonsproject.org/projects/pyramid/en/latest/narr/logging.html
+###
+
+[loggers]
+keys      = root, puppyserv
+
+[handlers]
+keys      = console
+
+[formatters]
+keys      = generic
+
+[logger_root]
+level     = INFO
+handlers  = console
+
+[logger_puppyserv]
+level     = INFO
+handlers  =
+qualname  = puppyserv
+
+[handler_console]
+class     = StreamHandler
+args      = (sys.stderr,)
+level     = NOTSET
+formatter = generic
+
+[handler_file]
+class     = logging.handlers.RotatingFileHandler
+args      = ('${buildout:directory}/log/puppyserv.log', 'a', 10*1024*1024, 20, 'utf-8')
+level     = INFO
+formatter = generic
+
+[formatter_generic]
+format    = %(asctime)s %(levelname)-5.5s [%(name)s][%(threadName)s] %(message)s
