@@ -1,8 +1,6 @@
 *~
 *.pyc
 /puppyserv.egg-info/
-/production.ini
-/log/
 
 /2014-*/
 /*.mkv
@@ -19,7 +17,13 @@
 /eggs/
 /parts/
 
+/log/
+/run/
+/etc/
+
+# Local buildout config (with secret URLs)
+/production.cfg
+
 /htmlcov/
 /.coverage
 /.tox/
-/etc/
