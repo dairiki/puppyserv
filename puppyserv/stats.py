@@ -10,7 +10,7 @@ import time
 
 import gevent
 import gevent.monkey
-Lock, = gevent.monkey.get_original('threading', ['Lock'])
+Lock = gevent.monkey.get_original('threading', 'Lock')
 
 log = logging.getLogger(__name__)
 

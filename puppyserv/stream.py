@@ -13,8 +13,9 @@ import gevent
 import gevent.lock
 import gevent.monkey
 
-Thread, Lock = gevent.monkey.get_original('threading', ['Thread', 'Lock'])
+Thread = gevent.monkey.get_original('threading', 'Thread')
 
+import puppyserv.greenlet
 from puppyserv.interfaces import VideoBuffer, VideoFrame
 from puppyserv.stats import dummy_stream_stat_manager
 from puppyserv.util import asbool
@@ -85,7 +86,7 @@ class ThreadedStreamBuffer(VideoBuffer):
 
         self.framebuf = deque(maxlen=buffer_size)
         self.length = 0
-        self.condition = _GeventCondition()
+        self.condition = puppyserv.greenlet.Condition()
 
         self.closed = False
 
@@ -142,56 +143,6 @@ class ThreadedStreamBuffer(VideoBuffer):
                     assert pos == self.length
                     frame = None        # timed out
             yield frame
-
-class _GeventCondition(object):
-    """ A gevent-aware version of threading.Condition
-
-    The ``wait`` method may be called only from a single (the gevent)
-    thread.
-
-    The ``notifyAll`` may safely be called from any thread.
-
-    """
-    def __init__(self, lock=None):
-        if lock is None:
-            # RLock?
-            lock = Lock()               # a real threading.Lock
-        self.lock = lock
-        self.waiters = []
-
-        self.acquire = lock.acquire
-        self.release = lock.release
-
-        # How we communicate from other threads to the gevent thread
-        async = gevent.get_hub().loop.async()
-        async.start(self._notify_all)
-        self.async = async
-
-    def __enter__(self):
-        return self.lock.__enter__()
-
-    def __exit__(self, exc_type, exc_value, tb):
-        return self.lock.__exit__(exc_type, exc_value, tb)
-
-    def wait(self, timeout=None):
-        # FIXME: check that we own and have locked the lock?
-        waiter = gevent.lock.Semaphore(0)
-        self.waiters.append(waiter)
-        self.release()
-        try:
-            if not waiter.wait(timeout):
-                self.waiters.remove(waiter)
-        finally:
-            self.acquire()
-
-    def notifyAll(self):
-        # FIXME: check that we own and have locked the lock?
-        self.async.send()
-
-    def _notify_all(self):
-        for waiter in self.waiters:
-            waiter.release()
-        self.waiters = []
 
 class FailsafeStreamBuffer(VideoBuffer):
     """ A stream bufferwhich falls back to a backup stream buffer if
