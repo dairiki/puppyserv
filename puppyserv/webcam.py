@@ -37,10 +37,13 @@ def stream_buffer_from_settings(settings, frame_timeout=5.0,
                                 stream_stat_manager=dummy_stream_stat_manager,
                                 **kwargs):
     try:
-        video_stream = WebcamVideoStream.from_settings(settings, **kwargs)
+        stream_config = config_from_settings(settings, subprefix='stream.',
+                                             **kwargs)
     except NotConfiguredError:
         video_buffer = None
     else:
+        frame_timeout = stream_config.pop('frame_timeout', frame_timeout)
+        video_stream = WebcamVideoStream(**stream_config)
         video_buffer = ThreadedStreamBuffer(
             video_stream,
             timeout=frame_timeout,
@@ -53,6 +56,7 @@ def stream_buffer_from_settings(settings, frame_timeout=5.0,
     except NotConfiguredError:
         still_buffer_factory = None
     else:
+        frame_timeout = still_config.pop('frame_timeout', frame_timeout)
         def still_buffer_factory():
             still_stream = WebcamStillStream(**still_config)
             return ThreadedStreamBuffer(
@@ -222,6 +226,7 @@ def _get_config(settings, prefix='webcam.'):
     for key, coerce in [('url', _strip),
                         ('max_rate', float),
                         ('socket_timeout', float),
+                        ('frame_timeout', float),
                         ('user_agent', _strip),
                         ('connect_timeout', float)]:
         if prefix + key in settings:

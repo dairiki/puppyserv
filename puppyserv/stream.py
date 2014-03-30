@@ -22,12 +22,23 @@ from puppyserv.util import asbool
 
 log = logging.getLogger(__name__)
 
-def video_frame_from_file(filename):
-    content_type, encoding = mimetypes.guess_type(filename)
-    if not content_type:
-        raise ValueError("Can not guess content type")
-    with open(filename, 'rb') as fp:
-        return VideoFrame(fp.read(), content_type)
+class StaticFrame(VideoFrame):
+    def __init__(self, filename):
+        content_type, encoding = mimetypes.guess_type(filename)
+        if not content_type:
+            raise ValueError("Can not guess content type")
+        with open(filename, 'rb') as fp:
+            super(StaticFrame, self).__init__(fp.read(), content_type)
+        self.filename = filename
+
+    def __repr__(self):
+        return u"{0.__class__.__name__}({0.filename!r})".format(self)
+
+    def __eq__(self, other):
+        return type(self) == type(other) and self.__dict__ == other.__dict__
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
 class StaticVideoStreamBuffer(VideoBuffer):
     """ A video stream from static images.  For testing.
@@ -49,7 +60,7 @@ class StaticVideoStreamBuffer(VideoBuffer):
         frame_rate = float(settings.get(prefix + 'frame_rate', 4.0))
 
         image_filenames = sorted(glob.glob(images))
-        frames = map(VideoFrame.from_file, image_filenames)
+        frames = map(StaticFrame, image_filenames)
         return cls(frames, loop, frame_rate)
 
     def close(self):

@@ -7,7 +7,7 @@ from datetime import datetime
 from functools import wraps
 import logging
 import logging.config
-from pkg_resources import get_distribution, resource_filename
+from pkg_resources import get_distribution
 
 import gevent
 
@@ -16,6 +16,7 @@ from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
 from puppyserv import webcam
+from puppyserv.config import Config, ReloadableSettings
 from puppyserv.interfaces import VideoFrame
 from puppyserv.stats import dummy_stream_stat_manager, StreamStatManager
 from puppyserv.stream import StaticVideoStreamBuffer
@@ -54,54 +55,33 @@ def _GET_only(view_method, allow=('GET', 'HEAD')):
         return response
     return wrapper
 
-def main(global_config, **settings):
+def main(global_config, **local_config):
     stream = None
 
     logging.config.fileConfig(global_config['__file__'], global_config)
+    settings = ReloadableSettings.from_config(global_config, **local_config)
+    config = Config(settings)
 
-    config = dict(
-        (key, float(settings.get(key, dflt)))
-        for key, dflt in [('max_total_framerate', 50.0),
-                          ('frame_timeout', 5.0),
-                          ('stop_stream_holdoff', 15.0)])
-
-    timeout_image = settings.get('timeout_image')
-
-    frame_timeout = config.pop('frame_timeout')
-
-    stream_stat_manager = StreamStatManager()
-    config['stream_stat_manager'] = stream_stat_manager
-
-    if settings.get('static.images'):
-        def stream_buffer_factory():
-            return StaticVideoStreamBuffer.from_settings(settings)
-    else:
-        def stream_buffer_factory():
-            return webcam.stream_buffer_from_settings(
-                settings,
-                frame_timeout=frame_timeout,
-                stream_stat_manager=stream_stat_manager,
-                user_agent=SERVER_NAME)
+    gevent.spawn(_watch_config, config, settings)
 
     log.info("App starting!")
-    return VideoStreamApp(stream_buffer_factory, **config)
+    return VideoStreamApp(config)
+
+def _watch_config(config, settings, check_interval=5):
+    while True:
+        gevent.sleep(check_interval)
+        if settings.changed:
+            settings.reload()
+            config.update(settings)
 
 class VideoStreamApp(object):
 
     boundary = b'puppyserv-92af5f768c28fad8'
 
-    def __init__(self, stream_buffer_factory,
-                 max_total_framerate=10,
-                 timeout_image=None,
-                 stream_stat_manager=dummy_stream_stat_manager,
-                 **kwargs):
-        if timeout_image is None:
-            timeout_image = resource_filename('puppyserv', 'timeout.jpg')
-        assert max_total_framerate > 0
-        self.max_total_framerate = max_total_framerate
-        self.buffer_manager = BufferManager(stream_buffer_factory, **kwargs)
-        self.timeout_frame = VideoFrame.from_file(timeout_image)
-        self.stream_stat_manager = stream_stat_manager
+    def __init__(self, config):
+        self.config = config
+        self.buffer_manager = BufferManager(config)
+
     @wsgify
     def __call__(self, request):
         if request.path_info == '/':
@@ -120,9 +100,9 @@ class VideoStreamApp(object):
 
     @_GET_only
     def snapshot(self, request):
-        with self.buffer_manager as stream_buffer:
+        with self.buffer_manager as stream:
             try:
-                frame = next(stream_buffer.stream())
+                frame = next(stream)
             except StopIteration:
                 # XXX: maybe different error?
                 return HTTPGatewayTimeout('Not connected to webcam')
@@ -135,19 +115,21 @@ class VideoStreamApp(object):
 
 
     def _app_iter(self, request):
+        config = self.config
+        buffer_manager = self.buffer_manager
         frame = None
 
         def max_rate():
-            return self.max_total_framerate / self.buffer_manager.n_clients
+            return config.max_total_framerate / buffer_manager.n_clients
 
         stream_name = "> %s" % request.client_addr
-        with self.buffer_manager as stream_buffer:
+        with buffer_manager as stream:
             limiter = BucketRateLimiter(max_rate=max_rate(), bucket_size=10)
-            stream = limiter(stream_buffer.stream())
-            with self.stream_stat_manager(stream, stream_name) as frames:
+            stream = limiter(stream)
+            with config.stream_stat_manager(stream, stream_name) as frames:
                 for frame in frames:
                     if frame is None:
-                        frame = self.timeout_frame
+                        frame = config.timeout_image
                     limiter.max_rate = max_rate()
                     yield self._part_for_frame(frame)
 
@@ -164,12 +146,15 @@ class VideoStreamApp(object):
             ])
 
 class BufferManager(object):
-    def __init__(self, buffer_factory, stop_stream_holdoff=15):
-        self.stop_stream_holdoff = stop_stream_holdoff
+    def __init__(self, config):
+        self.buffer_factory = config.buffer_factory
+        self.stop_stream_holdoff = config.stop_stream_holdoff
         self._n_clients = 0
-        self.buffer_factory = buffer_factory
         self._buffer = None
-        self._stopper = None
+        self._stopper = gevent.spawn(lambda : None)
+        self._stopper.join()
+
+        config.listen('buffer_factory', self._change_buffer_factory)
 
     @property
     def n_clients(self):
@@ -179,37 +164,57 @@ class BufferManager(object):
     # than one thread, but since we're geventing, we don't need it.
     def __enter__(self):
         if self._n_clients == 0:
-            self._start_stream()
+            if not self._buffer:
+                self._start_stream()
+            else:
+                assert not self._stopper.ready()
+                self._stopper.kill(block=False)
         self._n_clients += 1
         log.debug("BufferManager: nclients = %d", self._n_clients)
-        return self._buffer
+
+        return self._stream()
+
+    def _stream(self):
+        buffer_ = self._buffer
+        stream = buffer_.stream()
+        while True:
+            try:
+                yield next(stream)
+            except StopIteration:
+                if buffer_ is not self._buffer:
+                    buffer_ = self._buffer
+                    stream = buffer_.stream()
+                else:
+                    break
 
     def __exit__(self, exc_type, exc_value, exc_tb):
         assert self._n_clients > 0
         self._n_clients -= 1
         if self._n_clients == 0:
-            self._stop_stream()
+            assert self._buffer is not None
+            self._stop_stream(self.stop_stream_holdoff)
         log.debug("BufferManager: nclients = %d", self._n_clients)
 
-    def _start_stream(self):
-        assert self._n_clients == 0
-        if not self._buffer:
-            self._buffer = self.buffer_factory()
-            log.info("Started stream capture %r", self._buffer)
-        else:
-            assert not self._stopper.ready()
-            self._stopper.kill(block=False)
-            self._stopper = None
+    def _change_buffer_factory(self, config):
+        if self.buffer_factory != config.buffer_factory:
+            log.info("Stream configuration changed.")
+            self.buffer_factory = config.buffer_factory
+            if self._buffer is not None:
+                self._stop_stream(0)
+                if self._n_clients > 0:
+                    self._start_stream()
 
-    def _stop_stream(self):
-        assert self._n_clients == 0
-        assert self._buffer
-        assert not self._stopper
+    def _start_stream(self):
+        self._buffer = self.buffer_factory()
+        log.info("Started stream capture %r", self._buffer)
+
+    def _stop_stream(self, holdoff):
         def stop_stream():
             log.info("Stopped stream capture %r", self._buffer)
             self._buffer.close()
             self._buffer = None
-        holdoff = self.stop_stream_holdoff
+
+        self._stopper.kill(block=False)
         if holdoff > 0:
             self._stopper = gevent.spawn_later(holdoff, stop_stream)
         else:

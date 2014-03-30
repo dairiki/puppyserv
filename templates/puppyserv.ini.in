@@ -19,11 +19,10 @@ static.images = ${static.images}
 webcam.socket_timeout = 10.0
 webcam.stream.url = ${webcam.stream.url}
 webcam.stream.max_rate = 4.0
+webcam.stream.frame_timeout = 5.0
 webcam.still.url = ${webcam.still.url}
 webcam.still.max_rate = 1.0
-
-# How long to wait for a frame before displaying "timeout" frame
-frame_timeout = 5.0
+webcam.still.frame_timeout = 5.0
 
 # Maximum number of frames per second to deliver to all clients
 # This rate is divided evenly among clients, so if there are enough
@@ -57,6 +56,9 @@ master       = true
 
 # number of greenlets to run
 gevent       = 100
+
+# How long to wait for graceful shutdown
+reload-mercy = 2
 
 # Testing only
 #python-auto-reload = 2
