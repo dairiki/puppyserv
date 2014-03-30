@@ -118,7 +118,7 @@ class WebcamStreamBase(VideoStream):
             if self.stream is None:
                 next(self.open_rate_limiter)
                 self.stream = self._open_stream()
-            frame = next(self.stream, None)
+            frame = next(self.stream)
             self.open_rate_limiter.reset()
             return frame
         except Exception as ex:
