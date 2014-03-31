@@ -32,7 +32,7 @@ max_total_framerate = 25
 
 # How long to wait after the last client disconnects before stopping
 # stream acquisition.
-stop_stream_holdoff = 15
+stop_stream_holdoff = 180
 
 [app:static]
 use = egg:Paste#static
