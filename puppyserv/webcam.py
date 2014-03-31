@@ -85,7 +85,8 @@ class WebcamStreamBase(VideoStream):
                  rate_bucket_size=None,
                  socket_timeout=10,
                  user_agent=DEFAULT_USER_AGENT):
-        netloc, self.url = _parse_url(url)
+        self.url = url
+        netloc, self.path = _parse_url(url)
         self.conn = HTTPConnection(netloc, timeout=socket_timeout)
         self.request_headers = self.request_headers.copy()
         self.request_headers['User-Agent'] = user_agent
@@ -93,6 +94,10 @@ class WebcamStreamBase(VideoStream):
         self.stream = None
         self.rate_limiter = BucketRateLimiter(max_rate, rate_bucket_size)
         self.open_rate_limiter = BackoffRateLimiter(socket_timeout)
+
+    def __repr__(self):
+        return u"<%s at 0x%x: %s>" % (
+            self.__class__.__name__, id(self), self.url)
 
     @classmethod
     def from_settings(cls, settings, prefix='webcam.', **defaults):
@@ -135,7 +140,7 @@ class WebcamVideoStream(WebcamStreamBase):
     settings_subprefix = 'stream.'
 
     def _open_stream(self):
-        self.conn.request("GET", self.url, headers=self.request_headers)
+        self.conn.request("GET", self.path, headers=self.request_headers)
         resp = self.conn.getresponse()
         content_type = None
         try:
@@ -191,7 +196,7 @@ class WebcamStillStream(WebcamStreamBase):
 
     def _open_stream(self):
         while True:
-            self.conn.request("GET", self.url, headers=self.request_headers)
+            self.conn.request("GET", self.path, headers=self.request_headers)
             resp = self.conn.getresponse()
             data = resp.read()
             if resp.status != 200 or resp.msg.getmaintype() != 'image':
