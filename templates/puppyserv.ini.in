@@ -18,7 +18,7 @@ static.images = ${static.images}
 # webcam.still.socket_timeout for finer grained control.
 webcam.socket_timeout = 10.0
 webcam.stream.url = ${webcam.stream.url}
-webcam.stream.max_rate = 4.0
+webcam.stream.max_rate = 10.0
 webcam.stream.frame_timeout = 5.0
 webcam.still.url = ${webcam.still.url}
 webcam.still.max_rate = 1.0
