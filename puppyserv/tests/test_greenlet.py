@@ -12,8 +12,6 @@ import unittest
 import gevent
 from gevent.monkey import get_original
 
-from puppyserv.interfaces import VideoFrame
-
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
 

@@ -83,3 +83,6 @@
     File "/home/dairiki/puppyserv/puppyserv/stream.py", line 148, in stream
       assert wait_for is None
   AssertionError
+
+* TODO Put Etag, and cache-control login into /snapshot
+* TODO Better repr so can tell better what's happening when streams are opened

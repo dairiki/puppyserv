@@ -13,11 +13,6 @@ class VideoFrame(object):
         self.image_data = image_data
         self.content_type = content_type
 
-    @staticmethod
-    def from_file(filename):            # pragma: NO COVER
-        from puppyserv.stream import video_frame_from_file
-        return video_frame_from_file(filename)
-
 class VideoStream(object):
     """ A source of video frames.
 

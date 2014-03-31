@@ -18,22 +18,44 @@ from puppyserv.interfaces import VideoBuffer, VideoStream
 if not hasattr(unittest.TestCase, 'addCleanup'):
     import unittest2 as unittest
 
-class Test_video_frame_from_file(unittest.TestCase):
-    def call_it(self, filename):
-        from puppyserv.stream import video_frame_from_file
-        return video_frame_from_file(filename)
+class TestStaticFrame(unittest.TestCase):
+    def make_one(self, filename):
+        from puppyserv.stream import StaticFrame
+        return StaticFrame(filename)
 
-    def test(self):
+    def make_image_file(self, image_data=b'IMAGE DATA'):
         tmpfile = tempfile.NamedTemporaryFile(suffix='.jpg')
         tmpfile.write('IMAGE DATA')
         tmpfile.flush()
-        frame = self.call_it(tmpfile.name)
+        self.addCleanup(tmpfile.close)
+        return tmpfile.name
+
+    def test(self):
+        filename = self.make_image_file('IMAGE DATA')
+        frame = self.make_one(filename)
         self.assertEqual(frame.content_type, 'image/jpeg')
         self.assertEqual(frame.image_data, 'IMAGE DATA')
+        self.assertEqual(frame.filename, filename)
 
     def test_unguessable_type(self):
         with self.assertRaises(ValueError):
-            frame = self.call_it('foobar')
+            frame = self.make_one('foobar')
+
+    def test_repr(self):
+        filename = self.make_image_file()
+        frame = self.make_one(filename)
+        self.assertEqual(repr(frame), 'StaticFrame(%r)' % filename)
+
+    def test_eq(self):
+        filename = self.make_image_file()
+        frame1 = self.make_one(filename)
+        frame2 = self.make_one(filename)
+        frame3 = self.make_one(self.make_image_file())
+        self.assertTrue(frame1 == frame2)
+        self.assertFalse(frame1 != frame2)
+        self.assertFalse(frame1 == frame3)
+        self.assertTrue(frame1 != frame3)
+
 
 class TestStaticVideoStreamBuffer(unittest.TestCase):
     def setUp(self):

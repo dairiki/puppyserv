@@ -88,6 +88,12 @@ class WebcamStreamTests(object):
             frame = DummyVideoFrame()
         self.frame_queue.put(frame)
 
+    def test_repr(self):
+        stream = self.make_one('foo')
+        self.assertRegexpMatches(
+            repr(stream),
+            r'^<%s\b.*/foo>\Z' % self.stream_class.__name__)
+
     def test_from_settings(self):
         settings = {
             'webcam.url': test_server.application_url + 'not_found',

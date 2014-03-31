@@ -8,8 +8,9 @@ from itertools import count
 import tempfile
 import unittest
 
-from gevent import sleep
+import gevent
 from mock import call, patch, Mock
+from paste.deploy import loadapp
 from webob import Request, Response
 from webob.dec import wsgify
 
@@ -38,11 +39,18 @@ class Test_add_server_headers_filter(unittest.TestCase):
                                datetime.utcnow(),
                                delta=timedelta(seconds=2))
 
-@patch('puppyserv.VideoStreamApp', autospec=True)
 class Test_main(unittest.TestCase):
-    def make_global_config(self):
+    def make_config(self, app_name='main', local_config={}):
         config_ini = tempfile.NamedTemporaryFile(suffix='.ini')
         self.addCleanup(config_ini.close)
+
+        config_ini.writelines([
+            '[app:%s]\n' % app_name,
+            'use = call:puppyserv:main\n',
+            ])
+        for key, value in local_config.items():
+            config_ini.write('%s = %s\n' % (key, value))
+
         config_ini.writelines([
             '[loggers]\n',
             'keys = root\n',
@@ -66,53 +74,60 @@ class Test_main(unittest.TestCase):
             'format = %(message)s\n',
             ])
         config_ini.flush()
-        return {'__file__': config_ini.name}
+        config_uri = 'config:' + config_ini.name
+        return config_uri
 
-    def call_it(self, global_config, **settings):
-        from puppyserv import main
-        return main(global_config, **settings)
-
-    def test_static_images(self, VideoStreamApp):
-        global_config = self.make_global_config()
-        settings = {
-            'static.images': 'foo_*.jpg',
-            }
-        app = self.call_it(global_config, **settings)
+    @patch('puppyserv.VideoStreamApp', autospec=True)
+    @patch('puppyserv.Config', autospec=True)
+    def test(self, Config, VideoStreamApp):
+        local_config = {'bar': 'baz'}
+        config_uri = self.make_config('foo', local_config)
+        app = loadapp(config_uri, name='foo')
         self.assertIs(app, VideoStreamApp.return_value)
-        (buffer_factory,), config = VideoStreamApp.call_args
-        self.assertIsInstance(buffer_factory(), VideoBuffer)
+        (settings,), _ = Config.call_args
+        self.assertEqual(dict(settings), local_config)
+        (config,), _ = VideoStreamApp.call_args
+        self.assertIs(config, Config.return_value)
 
-    def test_stream_webcam(self, VideoStreamApp):
-        global_config = self.make_global_config()
-        settings = {
-            'webcam.stream.url': 'http://example.com/stream',
-            }
-        app = self.call_it(global_config, **settings)
-        self.assertIs(app, VideoStreamApp.return_value)
-        (buffer_factory,), config = VideoStreamApp.call_args
-        self.assertIsInstance(buffer_factory(), VideoBuffer)
+class Test_watch_config(unittest.TestCase):
+    def call_it(self, config, settings, **kwargs):
+        from puppyserv import _watch_config
+        return _watch_config(config, settings, **kwargs)
 
-    def test_empty_static_images_is_the_same_as_unset(self, VideoStreamApp):
-        from puppyserv.webcam import WebcamVideoStream
-        global_config = self.make_global_config()
-        settings = {
-            'static.images': '',
-            'webcam.stream.url': 'http://example.com/stream',
-            'webcam.still.url': '',
-            }
-        app = self.call_it(global_config, **settings)
-        self.assertIs(app, VideoStreamApp.return_value)
-        (buffer_factory,), config = VideoStreamApp.call_args
-        self.assertIsInstance(buffer_factory(), VideoBuffer)
-        self.assertIsInstance(buffer_factory().source, WebcamVideoStream)
+    def test(self):
+        config = Mock()
+        settings = Mock(changed=False)
+        gevent.spawn(self.call_it, config, settings, check_interval=0.01)
+        gevent.sleep(0.05)
+        self.assertFalse(settings.reload.called)
+        settings.changed = True
+        gevent.sleep(0.05)
+        self.assertTrue(settings.reload.called)
+        self.assertEqual(config.mock_calls[-1], call.update(settings))
 
 class TestVideoStreamApp(unittest.TestCase):
-    def make_one(self, buffer_factory, **kwargs):
+    def make_one(self, config=None, **kwargs):
         from puppyserv import VideoStreamApp
-        return VideoStreamApp(buffer_factory, **kwargs)
+        if config is None:
+            config = self.make_config(**kwargs)
+        return VideoStreamApp(config)
+
+    def make_config(self, **kwargs):
+        from puppyserv.config import Config
+        from puppyserv.stats import dummy_stream_stat_manager
+        attrs = {
+            'buffer_factory': DummyVideoBuffer,
+            'max_total_framerate': 50.0,
+            'stop_stream_holdoff': 15.0,
+            'stream_stat_manager': dummy_stream_stat_manager,
+            'timeout_image': VideoFrame(b'timed out'),
+            }
+        attrs.update(kwargs)
+        return DummyConfig(**attrs)
 
     def test_stream(self):
         req = Request.blank('/', accept='*/*')
+        config = self.make_config()
         app = self.make_one(buffer_factory=DummyVideoBuffer)
         resp = app(req)
         self.assertEqual(resp.content_type, 'multipart/x-mixed-replace')
@@ -196,13 +211,27 @@ class Test_GET_only(unittest.TestCase):
         self.assertEqual(set(resp.allow), set(['GET', 'HEAD']))
 
 class TestBufferManager(unittest.TestCase):
-    def make_one(self, buffer_factory, **kwargs):
+    def make_one(self, config=None, **kwargs):
         from puppyserv import BufferManager
-        return BufferManager(buffer_factory, **kwargs)
+        if config is None:
+            config = self.make_config(**kwargs)
+        return BufferManager(config)
+
+    def make_config(self, **kwargs):
+        from puppyserv.config import Config
+        from puppyserv.stats import dummy_stream_stat_manager
+        attrs = {
+            'buffer_factory': Mock(name='buffer_factory', spec=()),
+            'max_total_framerate': 50.0,
+            'stop_stream_holdoff': 15.0,
+            'stream_stat_manager': dummy_stream_stat_manager,
+            'timeout_image': VideoFrame(b'timed out'),
+            }
+        attrs.update(kwargs)
+        return DummyConfig(**attrs)
 
     def test_n_clients(self):
-        buffer_factory = Mock(name='buffer_factory', spec=())
-        manager = self.make_one(buffer_factory, stop_stream_holdoff=0)
+        manager = self.make_one(stop_stream_holdoff=0)
 
         self.assertEqual(manager.n_clients, 0)
         with manager:
@@ -217,36 +246,38 @@ class TestBufferManager(unittest.TestCase):
 
     def test_concurrent_clients_get_same_buffer(self):
         buffer_factory = Mock(name='buffer_factory', spec=())
-        manager = self.make_one(buffer_factory, stop_stream_holdoff=0)
+        manager = self.make_one(buffer_factory=buffer_factory,
+                                stop_stream_holdoff=0)
 
-        with manager as buf1:
-            self.assertIs(buf1, buffer_factory.return_value)
+        with manager as stream1:
+            self.assertIs(manager._buffer, buffer_factory.return_value)
             self.assertEqual(buffer_factory.mock_calls, [call()])
-            with manager as buf2:
-                self.assertIs(buf2, buf1)
+            with manager as stream2:
+                self.assertIs(manager._buffer, buffer_factory.return_value)
                 self.assertEqual(buffer_factory.mock_calls, [call()])
             self.assertEqual(buffer_factory.mock_calls, [call()])
         self.assertEqual(buffer_factory.mock_calls, [call(), call().close()])
 
-    def test_nonconcurrent_clients_get_differnt_buffer(self):
+    def test_nonconcurrent_clients_get_different_buffer(self):
         buffer_factory = Mock(name='buffer_factory', spec=())
-        manager = self.make_one(buffer_factory, stop_stream_holdoff=0)
-
-        with manager as buf1:
-            self.assertIs(buf1, buffer_factory.return_value)
+        manager = self.make_one(buffer_factory=buffer_factory,
+                                stop_stream_holdoff=0)
+        with manager as stream1:
+            self.assertIs(manager._buffer, buffer_factory.return_value)
             self.assertEqual(buffer_factory.mock_calls, [call()])
         self.assertEqual(buffer_factory.mock_calls, [call(), call().close()])
 
         new_buffer = Mock(name='new streambuffer')
         buffer_factory.return_value = new_buffer
-        with manager as buf2:
-            self.assertIs(buf2, new_buffer)
+        with manager as stream2:
+            self.assertIs(manager._buffer, new_buffer)
             self.assertEqual(new_buffer.mock_calls, [])
         self.assertEqual(new_buffer.mock_calls, [call.close()])
 
     def test_stop_stream_holdoff(self):
         buffer_factory = Mock(name='buffer_factory', spec=())
-        manager = self.make_one(buffer_factory, stop_stream_holdoff=0.1)
+        manager = self.make_one(buffer_factory=buffer_factory,
+                                stop_stream_holdoff=0.1)
         with manager as buf1:
             pass
         self.assertEqual(buffer_factory.mock_calls, [call()])
@@ -254,9 +285,82 @@ class TestBufferManager(unittest.TestCase):
         with manager as buf2:
             pass
         self.assertEqual(buffer_factory.mock_calls, [call()])
-        sleep(0.2)
+        gevent.sleep(0.2)
         self.assertEqual(buffer_factory.mock_calls, [call(), call().close()])
 
+    def test_stream(self):
+        manager = self.make_one(buffer_factory=DummyVideoBuffer([b'f1']),
+                                stop_stream_holdoff=0)
+        with manager as stream:
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f1')
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_change_stream_while_closed(self):
+        manager = self.make_one(buffer_factory=DummyVideoBuffer([b'f1']),
+                                stop_stream_holdoff=0)
+        with manager as stream:
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f1')
+            manager._change_buffer_factory(DummyVideoBuffer([b'f2']))
+        with manager as stream:
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f2')
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_change_stream_while_open(self):
+        manager = self.make_one(buffer_factory=DummyVideoBuffer([b'f1']),
+                                stop_stream_holdoff=0)
+        with manager as stream:
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f1')
+            manager._change_buffer_factory(DummyVideoBuffer([b'f2']))
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f2')
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_change_stream_while_in_holdoff(self):
+        manager = self.make_one(buffer_factory=DummyVideoBuffer([b'f1']),
+                                stop_stream_holdoff=0.1)
+        with manager as stream:
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f1')
+        manager._change_buffer_factory(DummyVideoBuffer([b'f2']))
+        with manager as stream:
+            frame = next(stream)
+            self.assertEqual(frame.image_data, b'f2')
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_config_changed(self):
+        orig = Mock()
+        new = Mock()
+        manager = self.make_one(buffer_factory=orig,
+                                stop_stream_holdoff=0)
+        with patch.object(manager, '_change_buffer_factory') \
+                 as change_buffer_factory:
+            manager._config_changed(Mock(buffer_factory=orig,
+                                         stop_stream_holdoff=1))
+            self.assertEqual(change_buffer_factory.mock_calls, [])
+            self.assertEqual(manager.stop_stream_holdoff, 1)
+            manager._config_changed(Mock(buffer_factory=new))
+            self.assertEqual(change_buffer_factory.mock_calls, [call(new)])
+
+class DummyConfig(object):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, tb):
+        pass
+
+    def listen(self, callback):
+        pass
 
 class DummyVideoBuffer(VideoBuffer):
     def __init__(self, image_data_iter=None, frame_delay=0):
@@ -264,9 +368,13 @@ class DummyVideoBuffer(VideoBuffer):
             image_data_iter = ("frame %d" % n for n in count(1))
         self.image_data_iter = iter(image_data_iter)
         self.frame_delay = frame_delay
+        self.closed = False
 
     def __call__(self):
         return self                     # hokey - serve as own factory
+
+    def close(self):
+        self.closed = True
 
     def stream(self):
         for image_data in self.image_data_iter:

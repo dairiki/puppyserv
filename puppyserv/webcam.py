@@ -37,10 +37,13 @@ def stream_buffer_from_settings(settings, frame_timeout=5.0,
                                 stream_stat_manager=dummy_stream_stat_manager,
                                 **kwargs):
     try:
-        video_stream = WebcamVideoStream.from_settings(settings, **kwargs)
+        stream_config = config_from_settings(settings, subprefix='stream.',
+                                             **kwargs)
     except NotConfiguredError:
         video_buffer = None
     else:
+        frame_timeout = stream_config.pop('frame_timeout', frame_timeout)
+        video_stream = WebcamVideoStream(**stream_config)
         video_buffer = ThreadedStreamBuffer(
             video_stream,
             timeout=frame_timeout,
@@ -53,6 +56,7 @@ def stream_buffer_from_settings(settings, frame_timeout=5.0,
     except NotConfiguredError:
         still_buffer_factory = None
     else:
+        frame_timeout = still_config.pop('frame_timeout', frame_timeout)
         def still_buffer_factory():
             still_stream = WebcamStillStream(**still_config)
             return ThreadedStreamBuffer(
@@ -81,7 +85,8 @@ class WebcamStreamBase(VideoStream):
                  rate_bucket_size=None,
                  socket_timeout=10,
                  user_agent=DEFAULT_USER_AGENT):
-        netloc, self.url = _parse_url(url)
+        self.url = url
+        netloc, self.path = _parse_url(url)
         self.conn = HTTPConnection(netloc, timeout=socket_timeout)
         self.request_headers = self.request_headers.copy()
         self.request_headers['User-Agent'] = user_agent
@@ -89,6 +94,10 @@ class WebcamStreamBase(VideoStream):
         self.stream = None
         self.rate_limiter = BucketRateLimiter(max_rate, rate_bucket_size)
         self.open_rate_limiter = BackoffRateLimiter(socket_timeout)
+
+    def __repr__(self):
+        return u"<%s at 0x%x: %s>" % (
+            self.__class__.__name__, id(self), self.url)
 
     @classmethod
     def from_settings(cls, settings, prefix='webcam.', **defaults):
@@ -131,7 +140,7 @@ class WebcamVideoStream(WebcamStreamBase):
     settings_subprefix = 'stream.'
 
     def _open_stream(self):
-        self.conn.request("GET", self.url, headers=self.request_headers)
+        self.conn.request("GET", self.path, headers=self.request_headers)
         resp = self.conn.getresponse()
         content_type = None
         try:
@@ -187,7 +196,7 @@ class WebcamStillStream(WebcamStreamBase):
 
     def _open_stream(self):
         while True:
-            self.conn.request("GET", self.url, headers=self.request_headers)
+            self.conn.request("GET", self.path, headers=self.request_headers)
             resp = self.conn.getresponse()
             data = resp.read()
             if resp.status != 200 or resp.msg.getmaintype() != 'image':
@@ -222,6 +231,7 @@ def _get_config(settings, prefix='webcam.'):
     for key, coerce in [('url', _strip),
                         ('max_rate', float),
                         ('socket_timeout', float),
+                        ('frame_timeout', float),
                         ('user_agent', _strip),
                         ('connect_timeout', float)]:
         if prefix + key in settings:
