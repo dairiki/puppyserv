@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from mock import call, patch, Mock
+from gevent import sleep
 
 from paste.deploy import loadapp
 
@@ -23,14 +24,15 @@ class TestConfig(unittest.TestCase):
     def test_listen(self):
         settings = {}
         config = self.make_one({'stop_stream_holdoff': '15'})
-        callback = Mock(spec=())
-        config.listen('stop_stream_holdoff', callback)
+        with config:
+            callback = Mock(spec=())
+            config.listen(callback)
         config.update({'max_total_framerate': '42'})
-        self.assertFalse(callback.called)
+        sleep(0.01)
+        self.assertEqual(callback.mock_calls, [call(config)])
         config.update({'stop_stream_holdoff': '15.0'})
-        self.assertFalse(callback.called)
-        config.update({'stop_stream_holdoff': '12'})
-        self.assertTrue(callback.called)
+        sleep(0.01)
+        self.assertEqual(callback.mock_calls, [call(config), call(config)])
 
     def test_bad_positive_float(self):
         with self.assertRaises(ValueError):

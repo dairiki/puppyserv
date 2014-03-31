@@ -5,7 +5,6 @@ from __future__ import absolute_import, division
 
 from datetime import datetime, timedelta
 from itertools import count
-import os
 import tempfile
 import unittest
 
@@ -124,7 +123,7 @@ class TestVideoStreamApp(unittest.TestCase):
             'timeout_image': VideoFrame(b'timed out'),
             }
         attrs.update(kwargs)
-        return Mock(name='Config', spec=Config, **attrs)
+        return DummyConfig(**attrs)
 
     def test_stream(self):
         req = Request.blank('/', accept='*/*')
@@ -229,7 +228,7 @@ class TestBufferManager(unittest.TestCase):
             'timeout_image': VideoFrame(b'timed out'),
             }
         attrs.update(kwargs)
-        return Mock(name='Config', spec=Config, **attrs)
+        return DummyConfig(**attrs)
 
     def test_n_clients(self):
         manager = self.make_one(stop_stream_holdoff=0)
@@ -304,8 +303,7 @@ class TestBufferManager(unittest.TestCase):
         with manager as stream:
             frame = next(stream)
             self.assertEqual(frame.image_data, b'f1')
-            config = Mock(buffer_factory=DummyVideoBuffer([b'f2']))
-            manager._change_buffer_factory(config)
+            manager._change_buffer_factory(DummyVideoBuffer([b'f2']))
         with manager as stream:
             frame = next(stream)
             self.assertEqual(frame.image_data, b'f2')
@@ -318,8 +316,7 @@ class TestBufferManager(unittest.TestCase):
         with manager as stream:
             frame = next(stream)
             self.assertEqual(frame.image_data, b'f1')
-            config = Mock(buffer_factory=DummyVideoBuffer([b'f2']))
-            manager._change_buffer_factory(config)
+            manager._change_buffer_factory(DummyVideoBuffer([b'f2']))
             frame = next(stream)
             self.assertEqual(frame.image_data, b'f2')
             with self.assertRaises(StopIteration):
@@ -331,13 +328,39 @@ class TestBufferManager(unittest.TestCase):
         with manager as stream:
             frame = next(stream)
             self.assertEqual(frame.image_data, b'f1')
-        config = Mock(buffer_factory=DummyVideoBuffer([b'f2']))
-        manager._change_buffer_factory(config)
+        manager._change_buffer_factory(DummyVideoBuffer([b'f2']))
         with manager as stream:
             frame = next(stream)
             self.assertEqual(frame.image_data, b'f2')
             with self.assertRaises(StopIteration):
                 next(stream)
+
+    def test_config_changed(self):
+        orig = Mock()
+        new = Mock()
+        manager = self.make_one(buffer_factory=orig,
+                                stop_stream_holdoff=0)
+        with patch.object(manager, '_change_buffer_factory') \
+                 as change_buffer_factory:
+            manager._config_changed(Mock(buffer_factory=orig,
+                                         stop_stream_holdoff=1))
+            self.assertEqual(change_buffer_factory.mock_calls, [])
+            self.assertEqual(manager.stop_stream_holdoff, 1)
+            manager._config_changed(Mock(buffer_factory=new))
+            self.assertEqual(change_buffer_factory.mock_calls, [call(new)])
+
+class DummyConfig(object):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, tb):
+        pass
+
+    def listen(self, callback):
+        pass
 
 class DummyVideoBuffer(VideoBuffer):
     def __init__(self, image_data_iter=None, frame_delay=0):

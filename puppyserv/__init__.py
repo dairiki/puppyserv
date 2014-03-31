@@ -15,11 +15,7 @@ from webob import Response
 from webob.dec import wsgify
 from webob.exc import HTTPGatewayTimeout, HTTPMethodNotAllowed, HTTPNotFound
 
-from puppyserv import webcam
 from puppyserv.config import Config, ReloadableSettings
-from puppyserv.interfaces import VideoFrame
-from puppyserv.stats import dummy_stream_stat_manager, StreamStatManager
-from puppyserv.stream import StaticVideoStreamBuffer
 from puppyserv.util import BucketRateLimiter
 
 log = logging.getLogger(__name__)
@@ -145,16 +141,18 @@ class VideoStreamApp(object):
             data, EOL,
             ])
 
+_successful_greenlet = gevent.spawn(lambda : None)
+_successful_greenlet.join()
+
 class BufferManager(object):
     def __init__(self, config):
-        self.buffer_factory = config.buffer_factory
-        self.stop_stream_holdoff = config.stop_stream_holdoff
+        with config:
+            self.buffer_factory = config.buffer_factory
+            self.stop_stream_holdoff = config.stop_stream_holdoff
+            config.listen(self._config_changed)
         self._n_clients = 0
         self._buffer = None
-        self._stopper = gevent.spawn(lambda : None)
-        self._stopper.join()
-
-        config.listen('buffer_factory', self._change_buffer_factory)
+        self._stopper = _successful_greenlet
 
     @property
     def n_clients(self):
@@ -195,14 +193,18 @@ class BufferManager(object):
             self._stop_stream(self.stop_stream_holdoff)
         log.debug("BufferManager: nclients = %d", self._n_clients)
 
-    def _change_buffer_factory(self, config):
+    def _config_changed(self, config):
+        self.stop_stream_holdoff = config.stop_stream_holdoff
         if self.buffer_factory != config.buffer_factory:
-            log.info("Stream configuration changed.")
-            self.buffer_factory = config.buffer_factory
-            if self._buffer is not None:
-                self._stop_stream(0)
-                if self._n_clients > 0:
-                    self._start_stream()
+            self._change_buffer_factory(config.buffer_factory)
+
+    def _change_buffer_factory(self, buffer_factory):
+        log.info("Stream configuration changed.")
+        self.buffer_factory = buffer_factory
+        if self._buffer is not None:
+            self._stop_stream(0)
+            if self._n_clients > 0:
+                self._start_stream()
 
     def _start_stream(self):
         self._buffer = self.buffer_factory()

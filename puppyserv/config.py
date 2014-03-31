@@ -8,13 +8,14 @@ import logging
 import os
 
 from pkg_resources import resource_filename
-from six import string_types
 
-from gevent import sleep
+from gevent import sleep, spawn
+from gevent.lock import Semaphore
 from paste.deploy import appconfig
 
 import puppyserv
 from puppyserv import webcam
+from puppyserv.greenlet import Condition
 from puppyserv.stats import StreamStatManager
 from puppyserv.stream import StaticFrame, StaticVideoStreamBuffer
 
@@ -23,34 +24,50 @@ log = logging.getLogger(__name__)
 class Config(object):
     def __init__(self, settings):
         self.stream_stat_manager = StreamStatManager()
-        self._listeners = []
+        self._condition = Condition()
         self.update(settings)
         self._validate()
 
-    def listen(self, keys, callback):
-        listener = _ConfigListener(keys, callback)
-        self._listeners.append(listener)
-        return listener
+    def __enter__(self):
+        return self._condition.__enter__()
+
+    def __exit__(self, exc_type, exc_value, tb):
+        return self._condition.__exit__(exc_type, exc_value, tb)
+
+    def listen(self, callback):
+        # FIXME: should only spawn one monitor greelet per thread
+        condition = self._condition
+        started = Semaphore(0)
+        def _listen():
+            with condition:
+                while True:
+                    started.release()
+                    condition.wait()
+                    callback(self)
+        spawn(_listen)
+        started.wait()
+
 
     def update(self, settings):
-        updated = set()
+        condition = self._condition
 
+        updated = set()
         def _set(key, value):
             if value != getattr(self, key, None):
                 updated.add(key)
                 log.info("Configured %s = %s", key, value)
             setattr(self, key, value)
 
-        for key, dflt, type_ in self.CONFIGS:
-            value = settings.get(key, dflt)
-            coerce_ = getattr(self, '_coerce_%s' % type_)
-            try:
-                _set(key, coerce_(value, settings))
-            except Exception as ex:
-                log.error("Invalid %s: %s", key, ex)
-
-        for listener in self._listeners:
-            listener(self, updated)
+        with condition:
+            for key, dflt, type_ in self.CONFIGS:
+                value = settings.get(key, dflt)
+                coerce_ = getattr(self, '_coerce_%s' % type_)
+                try:
+                    _set(key, coerce_(value, settings))
+                except Exception as ex:
+                    log.error("Invalid %s: %s", key, ex)
+            if updated:
+                condition.notifyAll()
 
     def _validate(self):
         unset = set()
@@ -91,17 +108,6 @@ class Config(object):
         return Factory(webcam.stream_buffer_from_settings, config,
                        stream_stat_manager=self.stream_stat_manager,
                        user_agent=puppyserv.SERVER_NAME)
-
-class _ConfigListener(object):
-    def __init__(self, keys, callback):
-        if isinstance(keys, string_types):
-            keys = [keys]
-        self.keys = frozenset(keys)
-        self.callback = callback
-
-    def __call__(self, config, updated):
-        if not self.keys.isdisjoint(updated):
-            self.callback(config)
 
 class Factory(object):
     """ This is like functools.partial, except it has equality comparison.

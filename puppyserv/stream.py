@@ -10,7 +10,6 @@ import mimetypes
 import time
 
 import gevent
-import gevent.lock
 import gevent.monkey
 
 Thread = gevent.monkey.get_original('threading', 'Thread')
