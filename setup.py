@@ -72,10 +72,7 @@ setup(name='puppyserv',
               'main = puppyserv:main',
               ],
           'paste.filter_factory': [
-              'add_server_headers = puppyserv:add_server_headers_filter',
-              ],
-          'console_scripts': [
-              #'btp_filestore_gc = btp.scripts.filestore_gc:main',
+              'add_server_headers = puppyserv.paste:add_server_headers_filter',
               ],
           },
 
