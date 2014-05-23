@@ -1,15 +1,59 @@
-=====
-NOTES
-=====
+=========
+Puppyserv
+=========
 
-To pack JPEGs to and MJPEG avi::
+A Simple MJPEG webcam rebroadcaster/proxy
+=========================================
 
-   python make_avi.py --output mjpeg.avi [dirnames]
+The idea is to make one streaming connection to a webcam, and then
+distribute that stream to many clients.
 
-To encode MJPEG to h264 try::
+Sorry, these notes are lacking. Bug me if you have question.
 
-   mencoder -profile h264-vhq -x264encopts crf=26 mjpeg.avi -o h264.avi
 
-To repackage as Matroska::
+Requirements
+~~~~~~~~~~~~
 
-   mkvmerge -o output.mkv h264.avi
+This should run using python 2.6 or 2.7.  Since we use gevent_, python 3 is
+not currently supported.
+
+Installation
+~~~~~~~~~~~~
+
+We use buildout_ for installation/deployment.
+If you’re lucky, the following should get you a basic working installation::
+
+    python bootstrap.py
+    bin/buildout
+
+Run the unit tests::
+
+    bin/py.test puppyserv
+
+To run a test-configured version of the server (which streams a static test
+video loop), in a terminal run::
+
+    bin/uwsgi etc/puppyserv.ini
+
+Then browse to http://localhost:8000/.  If the gods are with you, you will see a nice video loop.
+
+Real Configuration
+------------------
+
+The real deployment configuration was in a ``production.cfg`` buildout
+configuration file, which included and specialized ``buildout.cfg``.
+``Production.cfg`` is not checked into the git repository since it
+contains sensitive information (e.g. the URL of the source webcam).
+I’m positive that I backed up the production configuration before I
+deleted the production VPS server, but at the moment I am unable
+to find it :-/
+
+Author
+------
+
+`Jeff Dairiki`_.
+
+.. _Jeff Dairiki: mailto:dairiki@dairiki.org
+
+.. _gevent: http://www.gevent.org/
+.. _buildout: https://pypi.python.org/pypi/zc.buildout/
