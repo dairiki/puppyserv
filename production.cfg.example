@@ -1,0 +1,52 @@
+# NOTE:
+#
+# I have lost the final version of the production.cfg which I was
+# using on the rebroadcaster. This is an untested reconstruction of
+# what it probably looked like based on memory and an older version of
+# production.ini which I did manage to find.
+#  -- Jeff <dairiki@dairiki.org>  Mon Sep  1 15:51:46 PDT 2014
+#
+[buildout]
+extends = buildout.cfg
+
+[puppyserv.ini]
+# Testing
+static.images     =
+
+webcam.base = http://www.examlpe.com:1234
+webcam.args = user=USERNAME&pwd=PASSWORD
+
+# You need to set at least one of these for real streaming
+webcam.stream.url = ${:webcam.base}/videostream.cgi?${:webcam.args}&rate=13
+webcam.still.url = ${:webcam.base}/snapshot.cgi?${:webcam.args}
+
+# Notes on videostream.cgi query args
+#
+# resolution=8: 320x240
+# resolution=32: 640x480 (default)
+#
+# rate=0: max (default)
+# rate=1: 20 fps
+# rate=3: 15 fps
+# rate=6: 10 fps
+# rate=11: 5 fps
+# rate=12: 4 fps
+# rate=15: 3 fps (really 13?)
+# rate=14: 2 fps
+# rate=15: 1 fps
+# rate=17: 1 frame/2 sec
+# rate=19: 1 frame/3 sec
+# rate=21: 1 frame/4 sec
+# rate=23: 1 frame/5 sec
+#
+# The resolution also works for the static JPG, but obviously the rate has no
+# effect on it.
+
+
+###
+# Uwsgi configuration
+###
+
+# Set mode to either 'http' for a standalone http server
+# or uwsgi for uwsgi server.
+uwsgi-mode    = uwsgi

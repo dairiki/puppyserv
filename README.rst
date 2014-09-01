@@ -48,6 +48,11 @@ I’m positive that I backed up the production configuration before I
 deleted the production VPS server, but at the moment I am unable
 to find it :-/
 
+**UPDATE**: I did find an older version of the production configuration file.
+With that and memory, I’ve generated an *untested* reconstruction of what
+the real ``production.cfg`` looked like.  This is included here (with
+sensitive data elided) in ``production.cfg.example``.
+
 Author
 ------
 
